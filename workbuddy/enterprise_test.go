@@ -143,7 +143,8 @@ func TestFetchPaymentType_Enterprise(t *testing.T) {
 	}
 }
 
-// TestDisplayNote_Enterprise marks the region tag with the enterprise suffix.
+// TestDisplayNote_Enterprise keeps the plain CN region tag (the plan badge
+// identifies the enterprise account, not the note).
 func TestDisplayNote_Enterprise(t *testing.T) {
 	sa := &storedAuth{
 		Auth:    storedTokens{Domain: "www.codebuddy.cn"},
@@ -151,8 +152,8 @@ func TestDisplayNote_Enterprise(t *testing.T) {
 	}
 	cr := &creditsSummary{TotalRemain: 374, TotalUsed: 126, TotalSize: 500}
 	note := displayNote(sa, cr, false)
-	if !strings.Contains(note, "CN企业版") {
-		t.Errorf("note = %q, want CN企业版 marker", note)
+	if !strings.Contains(note, "CN · ") {
+		t.Errorf("note = %q, want CN region marker", note)
 	}
 	if !strings.Contains(note, "余374") || !strings.Contains(note, "池500") {
 		t.Errorf("note = %q, want remain/size values", note)
@@ -174,8 +175,8 @@ func TestDisplayNameFor_EnterpriseGivenName(t *testing.T) {
 	if got := displayNameFor(ent); got != "Alice" {
 		t.Fatalf("displayNameFor(enterprise) = %q, want Alice", got)
 	}
-	if got := labelForAuth(ent); !strings.Contains(got, "Alice") || !strings.Contains(got, "企业版") {
-		t.Fatalf("labelForAuth(enterprise) = %q, want Alice + 企业版", got)
+	if got := labelForAuth(ent); !strings.Contains(got, "Alice") || !strings.Contains(got, " [CN]") {
+		t.Fatalf("labelForAuth(enterprise) = %q, want Alice + [CN]", got)
 	}
 	// Personal account: nickname unchanged, no given_name in JWT.
 	personalJWT := "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString([]byte(`{"nickname":"user_abc"}`)) + ".sig"

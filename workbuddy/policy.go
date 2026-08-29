@@ -149,9 +149,6 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	} else {
 		region = "Global"
 	}
-	if isEnterpriseAccount(sa) {
-		region += "企业版"
-	}
 	parts := []string{region}
 	if disabled {
 		parts = append(parts, "已禁用")
@@ -227,9 +224,6 @@ func labelForAuth(sa *storedAuth) string {
 	tag := "CN"
 	if accountRegion(sa) == "global" {
 		tag = "Global"
-	}
-	if isEnterpriseAccount(sa) {
-		tag += "企业版"
 	}
 	return base + " [" + tag + "]"
 }
