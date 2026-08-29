@@ -72,7 +72,7 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 		"name":     saveResp.Name,
 		"path":     saveResp.Path,
 		"uid":      sa.Account.UID,
-		"nickname": sa.Account.Nickname,
+		"nickname": displayNameFor(sa),
 		"file":     auth.FileName,
 	}
 }
@@ -122,7 +122,7 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 			return map[string]any{"auth_index": authIndex, "error": "专家加油包仅适用于国际版账号"}
 		}
 		res, err := performTrialCall(sa)
-		out := map[string]any{"auth_index": authIndex, "nickname": sa.Account.Nickname}
+		out := map[string]any{"auth_index": authIndex, "nickname": displayNameFor(sa)}
 		if err != nil {
 			out["error"] = err.Error()
 		} else {
@@ -178,7 +178,7 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 			"ok":          true,
 			"active_auth": f.ID,
 			"region":      accountRegion(sa),
-			"nickname":    sa.Account.Nickname,
+			"nickname":    displayNameFor(sa),
 			"uid":         sa.Account.UID,
 		}
 	}
@@ -214,9 +214,10 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			cr, err := fetchUserResource(sa)
 			acct := map[string]any{
 				"auth_index": authIndex,
-				"nickname":   sa.Account.Nickname,
+				"nickname":   displayNameFor(sa),
 				"uid":        sa.Account.UID,
 				"region":     accountRegion(sa),
+				"enterprise": isEnterpriseAccount(sa),
 				"name":       f.Name,
 				"label":      f.Label,
 				"disabled":   f.Disabled,
@@ -271,7 +272,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			continue
 		}
 		cr, err := fetchUserResource(sa)
-		ac := acctCredits{AuthIndex: f.AuthIndex, Nickname: sa.Account.Nickname, UID: sa.Account.UID}
+		ac := acctCredits{AuthIndex: f.AuthIndex, Nickname: displayNameFor(sa), UID: sa.Account.UID}
 		if err != nil {
 			ac.Error = err.Error()
 		} else {

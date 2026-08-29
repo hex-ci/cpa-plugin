@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -20,6 +21,13 @@ import (
 func isGlobalDomain(domain string) bool {
 	d := strings.ToLower(strings.TrimSpace(domain))
 	return d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai")
+}
+
+// isEnterpriseAccount: enterprise members are bound to a non-empty
+// enterpriseId at login. They bill through a monthly-resetting usage pool:
+// no check-in, no trial, and lifecycle policies do not apply.
+func isEnterpriseAccount(sa *storedAuth) bool {
+	return sa != nil && strings.TrimSpace(sa.Account.EnterpriseID) != ""
 }
 
 // accountRegion returns "cn" or "global" based on the auth's domain field.
@@ -260,6 +268,11 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 }
 
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
+	// Enterprise members have no personal packages; get-user-resource
+	// returns an empty list for them.
+	if isEnterpriseAccount(sa) {
+		return fetchEnterpriseResource(sa)
+	}
 	now := time.Now()
 	// Status 0=active, 3=exhausted-but-still-listed. PageSize 100 covers the
 	// multi-pack free accounts we see in production; paginate if TotalCount
@@ -335,7 +348,58 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	return sum, nil
 }
 
+// fetchEnterpriseResource reads the enterprise usage pool: the upstream
+// reports the cycle cap (limitNum) and the already-consumed amount (credit),
+// so remain = limitNum − credit. Quota resets per cycle (cycleResetTime).
+func fetchEnterpriseResource(sa *storedAuth) (*creditsSummary, error) {
+	data, err := billingCall(sa, "/v2/billing/meter/get-enterprise-user-usage", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	var m struct {
+		Credit         float64 `json:"credit"`
+		LimitNum       float64 `json:"limitNum"`
+		CycleStartTime string  `json:"cycleStartTime"`
+		CycleEndTime   string  `json:"cycleEndTime"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	// Round to whole units: the credits summary is integer-based.
+	size := int64(math.Round(m.LimitNum))
+	used := int64(math.Round(m.Credit))
+	remain := size - used
+	if remain < 0 {
+		remain = 0
+	}
+	if used < 0 {
+		used = 0
+	}
+	if size < 0 {
+		size = remain + used
+	}
+	sum := &creditsSummary{
+		TotalRemain: remain,
+		TotalUsed:   used,
+		TotalSize:   size,
+		PackCount:   1,
+		Packages: []packageSummary{{
+			Name:       "企业版周期额度",
+			Remain:     remain,
+			Used:       used,
+			Size:       size,
+			CycleStart: m.CycleStartTime,
+			CycleEnd:   m.CycleEndTime,
+		}},
+	}
+	return sum, nil
+}
+
 func fetchPaymentType(sa *storedAuth) string {
+	// Personal get-payment-type reports "free" for enterprise members.
+	if isEnterpriseAccount(sa) {
+		return "enterprise"
+	}
 	data, err := billingCall(sa, "/v2/billing/meter/get-payment-type", nil)
 	if err != nil {
 		return ""

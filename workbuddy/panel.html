@@ -335,12 +335,16 @@ function card(a){
   const exhausted=!!a.exhausted||(!!cr&&(cr.total_remain||0)===0&&((cr.total_used||0)>0||(cr.total_size||0)>0||(cr.packages&&cr.packages.length)));
   const region=a.region||"cn";
   const isGlobal=region==="global";
+  const isEnt=!!a.enterprise;
   const disabled=!!a.disabled;
   const selected=!!a.selected;
-  const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
+  const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":(isEnt?"CN企业":"CN")}</span>`;
+  // Enterprise: no check-in / no trial claim (quota is admin-managed).
   // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
   let actionHTML;
-  if(isGlobal){
+  if(isEnt){
+    actionHTML='<span class="badge pro" title="额度由管理员按月发放">企业版额度</span>';
+  }else if(isGlobal){
     if(a.trial_claimed){
       actionHTML='<button class="done" disabled="disabled">已领取</button>';
     }else{
@@ -357,7 +361,8 @@ function card(a){
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
   const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
-  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(a.plan||"-")}</span>`;
+  const planLabel=plan==="enterprise"?"企业版":(a.plan||"-");
+  const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(planLabel)}</span>`;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}">
   <h2>${esc(a.nickname||a.label||a.name)} <span style="display:flex;gap:6px;align-items:center">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
@@ -665,6 +670,9 @@ async function load(force, btn){
 function checkinResultToast(res, who){
   const name=res.nickname||who||"账号";
   if(res.error){toast(name+"：签到失败","err",res.error);return}
+  if(res.reason==="enterprise"){
+    toast(name+"：企业版不走签到","warn",res.message||"额度由管理员按月发放");return;
+  }
   if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
     toast(name+"：国际版无需签到","warn",res.message||"请用领取专家加油包");return;
   }
@@ -676,7 +684,7 @@ function checkinResultToast(res, who){
 }
 function isCheckinDoneResult(res){
   if(!res||res.error) return false;
-  if(res.reason==="global") return false;
+  if(res.reason==="global"||res.reason==="enterprise") return false;
   if(res.success) return true;
   const msg=String(res.message||"");
   // already checked in today (backend) — treat as done, not failure
@@ -774,9 +782,11 @@ async function checkinAll(btn){
     const already=Number(s.already??rs.filter(x=>isCheckinDoneResult(x)&&(x.reason==="already"||x.skipped||!x.success)).length)||0;
     const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
     const skippedGlobal=Number(s.skipped_global||0);
+    const skippedEnt=Number(s.skipped_enterprise||0);
     const eligible=Number(s.eligible??(ok+fail))||0;
     const detailParts=[];
     if(skippedGlobal) detailParts.push("跳过 Global "+skippedGlobal);
+    if(skippedEnt) detailParts.push("跳过企业版 "+skippedEnt);
     if(already) detailParts.push("今日已签 "+already);
     if(eligible) detailParts.push("待签 "+eligible);
     const detail=detailParts.join(" · ");

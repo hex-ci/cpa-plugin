@@ -317,6 +317,12 @@ func reconcileOneAccount(authIndex, authID string, force bool) (action lifecycle
 	}
 
 	region := accountRegion(sa)
+	// Enterprise quota resets per cycle and is admin-managed; lifecycle
+	// actions would strand a working account. Refresh the note only.
+	if isEnterpriseAccount(sa) {
+		_ = syncAuthNote(authIndex, authID, sa, cr, disabled)
+		return lifecycleNone, nil
+	}
 	if region == "cn" && disabled {
 		if shouldReenableCN(true, cr) {
 			if err := reenableAuth(authIndex, authID, sa, cr); err != nil {
