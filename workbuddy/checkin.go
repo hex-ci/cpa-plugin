@@ -132,6 +132,14 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 			}
 			return
 		}
+		// Enterprise: no check-in (quota is admin-managed per cycle); still
+		// reconcile so the note refreshes.
+		if isEnterpriseAccount(sa) {
+			if lifecycleEnabled() {
+				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
+			}
+			return
+		}
 		// CN: daily check-in when enabled.
 		ci, err := fetchCheckinStatus(sa)
 		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
@@ -232,7 +240,7 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 
 	// Summary counters (field names are a panel contract — panel.html
 	// checkinAll reads success/already/fail/skipped_global/eligible).
-	successN, failN, alreadyN, globalN, eligibleN := 0, 0, 0, 0, 0
+	successN, failN, alreadyN, globalN, entN, eligibleN := 0, 0, 0, 0, 0, 0
 	for _, out := range results {
 		if out == nil {
 			continue
@@ -249,6 +257,9 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 		case "global":
 			globalN++
 			continue
+		case "enterprise":
+			entN++
+			continue
 		}
 		eligibleN++
 		if out["success"] == true {
@@ -260,13 +271,14 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{
 		"results": results,
 		"summary": map[string]any{
-			"total":          len(targets),
-			"eligible":       eligibleN,
-			"success":        successN,
-			"already":        alreadyN,
-			"skipped_global": globalN,
-			"fail":           failN,
-			"attempted":      eligibleN,
+			"total":              len(targets),
+			"eligible":           eligibleN,
+			"success":            successN,
+			"already":            alreadyN,
+			"skipped_global":     globalN,
+			"skipped_enterprise": entN,
+			"fail":               failN,
+			"attempted":          eligibleN,
 		},
 	}
 }
@@ -288,13 +300,20 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		out["error"] = err.Error()
 		return out
 	}
-	out["nickname"] = sa.Account.Nickname
+	out["nickname"] = displayNameFor(sa)
 
 	if isGlobalDomain(sa.Auth.Domain) {
 		out["success"] = false
 		out["skipped"] = true
 		out["reason"] = "global"
 		out["message"] = "国际版账号不支持签到，请使用领取专家加油包"
+		return out
+	}
+	if isEnterpriseAccount(sa) {
+		out["success"] = false
+		out["skipped"] = true
+		out["reason"] = "enterprise"
+		out["message"] = "企业版账号不走签到，额度由管理员按月发放"
 		return out
 	}
 
