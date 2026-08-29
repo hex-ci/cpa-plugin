@@ -102,7 +102,39 @@ func hostBridgeAvailable() bool {
 	return hostAPI != nil && hostAPI.call != nil
 }
 
-// hostHTTPDo performs a non-streaming upstream call via the host's http bridge.
+// hostHTTPResponseFromWire decodes the host's http bridge response payload.
+// The host serializes pluginapi.HTTPResponse directly (no json tags on its
+// fields), so the wire uses PascalCase keys: {"StatusCode":200,"Headers":...,"Body":...}.
+// Older hosts emitted snake_case keys; accept both for forward/backward compat.
+func hostHTTPResponseFromWire(result json.RawMessage) (*hostHTTPResponse, error) {
+	var resp struct {
+		StatusCode int                 `json:"StatusCode"`
+		Headers    map[string][]string `json:"Headers"`
+		Body       []byte              `json:"Body"`
+	}
+	if err := json.Unmarshal(result, &resp); err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == 0 {
+		var legacy struct {
+			StatusCode int                 `json:"status_code"`
+			Headers    map[string][]string `json:"headers"`
+			Body       []byte              `json:"body"`
+		}
+		if err := json.Unmarshal(result, &legacy); err == nil && legacy.StatusCode != 0 {
+			resp.StatusCode = legacy.StatusCode
+			resp.Headers = legacy.Headers
+			resp.Body = legacy.Body
+		}
+	}
+	return &hostHTTPResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    http.Header(resp.Headers),
+		Body:       resp.Body,
+	}, nil
+}
+
+// hostHTTPDo executes a non-streaming upstream call via the host's http bridge.
 // Request body is read eagerly (callers already have []byte or a small buffer).
 // The response body is likewise read eagerly — all existing call sites consume
 // it via io.ReadAll then Close, so we keep that shape and discard the closer.
@@ -150,19 +182,14 @@ func hostHTTPDo(req *http.Request) (*hostHTTPResponse, error) {
 	if err != nil {
 		return hostHTTPDoDirect(req, bodyBytes)
 	}
-	var resp struct {
-		StatusCode int                 `json:"status_code"`
-		Headers    map[string][]string `json:"headers,omitempty"`
-		Body       []byte              `json:"body,omitempty"`
+	// The host serializes pluginapi.HTTPResponse directly (no json tags on its
+	// fields) so the wire uses PascalCase keys: {"StatusCode":200,"Headers":...,"Body":...}.
+	// hostHTTPResponseFromWire also accepts the legacy snake_case shape.
+	resp2, errParse := hostHTTPResponseFromWire(result)
+	if errParse != nil {
+		return nil, fmt.Errorf("decode host.http.do response: %w", errParse)
 	}
-	if err := json.Unmarshal(result, &resp); err != nil {
-		return nil, fmt.Errorf("decode host.http.do response: %w", err)
-	}
-	return &hostHTTPResponse{
-		StatusCode: resp.StatusCode,
-		Headers:    http.Header(resp.Headers),
-		Body:       resp.Body,
-	}, nil
+	return resp2, nil
 }
 
 // hostHTTPDoDirect executes the request via the plugin's own http.Client.
