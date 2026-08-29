@@ -342,9 +342,7 @@ function card(a){
   // Enterprise: no check-in / no trial claim (quota is admin-managed).
   // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
   let actionHTML;
-  if(isEnt){
-    actionHTML='<span class="badge pro" title="额度由管理员按月发放">企业版额度</span>';
-  }else if(isGlobal){
+  if(isGlobal){
     if(a.trial_claimed){
       actionHTML='<button class="done" disabled="disabled">已领取</button>';
     }else{
