@@ -24,6 +24,11 @@ type rpcHostAuthGetResponse struct {
 	JSON      json.RawMessage `json:"json"`
 }
 
+func isWorkbuddyAuthListName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == authFileName || strings.HasPrefix(name, providerName+"-")
+}
+
 // hostAuthList returns all workbuddy credentials known to the host.
 func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	raw, err := hostCall(pluginabi.MethodHostAuthList, nil)
@@ -42,16 +47,12 @@ func hostAuthList() ([]pluginapi.HostAuthFileEntry, error) {
 	// array (P1-3: fragile pattern, safe today but could break if resp is
 	// ever cached/reused).
 	//
-	// Filter by filename prefix, NOT by Type/Provider: many existing auth
-	// files on disk don't carry a "type"/"provider" field (they were written
-	// before that convention), and EqualFold("", providerName) returns false
-	// for them — meaning we'd incorrectly exclude files that have the
-	// workbuddy- prefix but no type field. Filename prefix is the only
-	// reliable cross-version discriminator.
+	// Filter by the canonical legacy filename or the provider-specific prefix,
+	// NOT by Type/Provider: many existing auth files don't carry those fields.
+	// Filename is the reliable cross-version discriminator.
 	out := make([]pluginapi.HostAuthFileEntry, 0, len(resp.Files))
-	prefix := providerName + "-"
 	for _, f := range resp.Files {
-		if strings.HasPrefix(strings.ToLower(f.Name), prefix) {
+		if isWorkbuddyAuthListName(f.Name) {
 			out = append(out, f)
 		}
 	}

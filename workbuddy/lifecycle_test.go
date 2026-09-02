@@ -55,6 +55,15 @@ func TestIsHardCreditError(t *testing.T) {
 	}
 }
 
+func TestHardCreditErrorRecognizesQuotaAlreadyExhausted(t *testing.T) {
+	if !isHardCreditError(429, `{"message":"额度已用尽"}`) {
+		t.Fatal("额度已用尽 not recognized")
+	}
+	if isHardCreditError(429, `{"message":"too many requests"}`) {
+		t.Fatal("pure 429 classified as hard credit")
+	}
+}
+
 func TestIsSoftRateLimit(t *testing.T) {
 	if !isSoftRateLimit(429, "too many requests") {
 		t.Fatal("429 should be soft")

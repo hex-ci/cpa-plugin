@@ -33,6 +33,20 @@ func ensureScheduler() {
 // during its own runtime teardown, where touching Go sync primitives from the
 // plugin's c-shared runtime caused SIGSEGV on every restart.
 
+func scheduledInCurrentHour(now time.Time, hours []int) bool {
+	for _, h := range hours {
+		start := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+		if !now.Before(start) && now.Before(start.Add(time.Hour)) {
+			return true
+		}
+	}
+	return false
+}
+
+func scheduledActionsFor(now time.Time) (runCheckin, runKeepalive bool) {
+	return scheduledInCurrentHour(now, checkinHours), scheduledInCurrentHour(now, keepaliveHours)
+}
+
 func nextCheckinTime(now time.Time) time.Time {
 	var earliest time.Time
 	// Consider both checkin and keepalive schedules so the timer wakes up for
@@ -61,11 +75,11 @@ func schedulerLoop(stop chan struct{}) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			runAutoCheckin()
-			// Fire keepalive if the current tick falls within its scheduled
-			// window (e.g. 22:00 keepalive fires on the 22:00 tick even though
-			// the previous checkin tick was 21:00).
-			if shouldRunKeepaliveNow(time.Now()) {
+			runCheckin, runKeepalive := scheduledActionsFor(time.Now())
+			if runCheckin {
+				runAutoCheckin()
+			}
+			if runKeepalive {
 				runTokenKeepalive()
 			}
 		}
@@ -140,45 +154,47 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 			}
 			return
 		}
-		// CN: daily check-in when enabled.
-		ci, err := fetchCheckinStatus(sa)
-		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-			if _, callErr := performCheckinCall(sa); callErr == nil {
-				// Refresh once after a successful checkin call so cache reflects
-				// the post-call state. If the status call fails keep the pre-call
-				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
-				// with a second fetch that could race with concurrent readers).
-				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-					ci = ci2
-				}
-				// P1-5: checkin grants new credits — refresh the credits cache
-				// immediately so the panel shows the updated balance without
-				// waiting for the async reconcile pass.
-				if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
-					if v, ok := accountCache.Load(f.ID); ok {
-						if prev, ok2 := v.(*accountCacheEntry); ok2 {
-							fresh := *prev
-							fresh.credits = cr2
-							fresh.fetched = time.Now()
-							accountCache.Store(f.ID, &fresh)
+		withCheckinLock(f.AuthIndex, func() {
+			// CN: daily check-in when enabled.
+			ci, err := fetchCheckinStatus(sa)
+			if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
+				if _, callErr := performCheckinCall(sa); callErr == nil {
+					// Refresh once after a successful checkin call so cache reflects
+					// the post-call state. If the status call fails keep the pre-call
+					// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
+					// with a second fetch that could race with concurrent readers).
+					if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
+						ci = ci2
+					}
+					// P1-5: checkin grants new credits — refresh the credits cache
+					// immediately so the panel shows the updated balance without
+					// waiting for the async reconcile pass.
+					if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
+						if v, ok := accountCache.Load(f.ID); ok {
+							if prev, ok2 := v.(*accountCacheEntry); ok2 {
+								fresh := *prev
+								fresh.credits = cr2
+								fresh.fetched = time.Now()
+								accountCache.Store(f.ID, &fresh)
+							}
 						}
 					}
 				}
 			}
-		}
-		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
-		if ci != nil {
-			var prev *accountCacheEntry
-			if v, ok := accountCache.Load(f.ID); ok {
-				prev, _ = v.(*accountCacheEntry)
+			// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
+			if ci != nil {
+				var prev *accountCacheEntry
+				if v, ok := accountCache.Load(f.ID); ok {
+					prev, _ = v.(*accountCacheEntry)
+				}
+				entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
+				if prev != nil {
+					entry.credits = prev.credits
+					entry.plan = prev.plan
+				}
+				accountCache.Store(f.ID, entry)
 			}
-			entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-			if prev != nil {
-				entry.credits = prev.credits
-				entry.plan = prev.plan
-			}
-			accountCache.Store(f.ID, entry)
-		}
+		})
 		if lifecycleEnabled() {
 			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 		}
@@ -203,6 +219,10 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 // (sem=4), preserving input order and the {results, summary} response shape
 // the panel depends on.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
+	return handleManualCheckinWithCallback(req, "")
+}
+
+func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
 	}
@@ -233,7 +253,7 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = checkinOneAccount(f)
+			results[i] = checkinOneAccountWithCallback(f, callbackID)
 		}(i, f)
 	}
 	wg.Wait()
@@ -293,6 +313,10 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 // runAutoCheckin path's job), no redundant status refetches. Cache updates
 // merge into the previous entry so credits/plan survive.
 func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
+	return checkinOneAccountWithCallback(f, "")
+}
+
+func checkinOneAccountWithCallback(f pluginapi.HostAuthFileEntry, callbackID string) map[string]any {
 	out := map[string]any{"auth_index": f.AuthIndex}
 
 	sa, err := hostAuthGet(f.AuthIndex)
@@ -323,7 +347,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 
 	// Status probe: a failure here is NOT fatal — the check-in call below is
 	// idempotent upstream and its business message tells us "already" anyway.
-	ci, ciErr := fetchCheckinStatus(sa)
+	ci, ciErr := fetchCheckinStatusWithCallback(sa, callbackID)
 	if ciErr == nil && ci != nil && ci.TodayCheckedIn {
 		mergeCheckinCache(f.ID, ci)
 		out["success"] = true
@@ -333,7 +357,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		return out
 	}
 
-	res, err := performCheckinCall(sa)
+	res, err := performCheckinCallWithCallback(sa, callbackID)
 	if err != nil {
 		out["error"] = err.Error()
 		out["success"] = false
@@ -357,7 +381,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 
 	// Post-call cache refresh: one extra status fetch at most; on failure
 	// write a TodayCheckedIn placeholder rather than leaving the panel stale.
-	if ci2, err2 := fetchCheckinStatus(sa); err2 == nil && ci2 != nil {
+	if ci2, err2 := fetchCheckinStatusWithCallback(sa, callbackID); err2 == nil && ci2 != nil {
 		mergeCheckinCache(f.ID, ci2)
 	} else {
 		mergeCheckinCache(f.ID, &checkinSummary{TodayCheckedIn: true})
@@ -378,6 +402,13 @@ func mergeCheckinCache(authID string, ci *checkinSummary) {
 		entry.plan = prev.plan
 	}
 	accountCache.Store(authID, entry)
+}
+
+func withCheckinLock(authIndex string, fn func()) {
+	mu := checkinLockFor(authIndex)
+	mu.Lock()
+	defer mu.Unlock()
+	fn()
 }
 
 func checkinLockFor(authIndex string) *sync.Mutex {

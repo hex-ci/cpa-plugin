@@ -60,7 +60,10 @@ import "C"
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -87,7 +90,7 @@ const (
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
-	// CN endpoint aliases (login / chat / models). upstreamBaseCN is the only
+	// CN endpoint aliases (login / chat). upstreamBaseCN is the only
 	// CN base; Global has its own upstreamBaseGlobal. No "upstreamBase" legacy
 	// alias — removed in v0.6.31 dead-code sweep.
 	endpointAuthState    = upstreamBaseCN + "/v2/plugin/auth/state?platform=CLI"
@@ -95,7 +98,6 @@ const (
 	endpointAuthToken    = upstreamBaseCN + "/v2/plugin/auth/token?state="
 	endpointTokenRefresh = upstreamBaseCN + "/v2/plugin/auth/token/refresh"
 	endpointChat         = upstreamBaseCN + "/v2/chat/completions"
-	endpointModels       = upstreamBaseCN + "/console/enterprises/personal/models"
 
 	loginTTL = 5 * time.Minute
 )
@@ -104,8 +106,10 @@ const (
 // CodeBuddy associates the browser login with the state issued at auth/state,
 // so we must reuse the same cookie jar across the state request and the polls.
 type loginCtx struct {
-	client  *http.Client
-	expires time.Time
+	client         *http.Client
+	expires        time.Time
+	profile        oauthRequestProfile
+	loginSessionID string
 }
 
 var (
@@ -236,7 +240,9 @@ func hostCall(method string, request []byte) ([]byte, error) {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
-		configure(request)
+		if err := configure(request); err != nil {
+			return nil, err
+		}
 		return okEnvelope(wbRegistration())
 	case pluginabi.MethodModelStatic:
 		return handleModelStatic(request)
@@ -259,9 +265,9 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	case pluginabi.MethodExecutorExecuteStream:
 		return handleExecStream(request)
 	case pluginabi.MethodExecutorCountTokens:
-		// Upstream CodeBuddy has no dedicated count_tokens API. Return
-		// unhandled-style zero estimate so clients fall back / skip.
-		return okEnvelope(pluginapi.ExecutorResponse{Payload: []byte(`{"input_tokens":0}`)})
+		return errorEnvelope("unsupported_method", "WorkBuddy does not expose a count_tokens API"), nil
+	case pluginabi.MethodExecutorHTTPRequest:
+		return handleExecHTTPRequest(request)
 	case pluginabi.MethodManagementRegister:
 		// Cache host-injected BasePath so handleManagement doesn't hardcode
 		// /v0/management (v0.6.31: tolerate future host path changes).
@@ -269,6 +275,9 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		if err := json.Unmarshal(request, &regReq); err == nil {
 			if regReq.BasePath != "" {
 				setManagementBasePath(regReq.BasePath)
+			}
+			if regReq.ResourceBasePath != "" {
+				setResourceBasePath(regReq.ResourceBasePath)
 			}
 		}
 		return okEnvelope(managementRegistration())
@@ -294,8 +303,9 @@ type envelope struct {
 }
 
 type envelopeError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	HTTPStatus int    `json:"http_status,omitempty"`
 }
 
 type identifierResponse struct {
@@ -327,8 +337,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-// The default matches the VERSION file for builds without ldflags.
-var version = "0.8.7"
+var version = "0.9.3"
 
 func wbRegistration() registration {
 	return registration{
@@ -343,8 +352,14 @@ func wbRegistration() registration {
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 and 21:00 local time for CN accounts (default true)."},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Auto disable CN / delete Global when credits exhausted; re-enable CN after check-in restores credits (default true)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily access-token refresh at 22:00 local time to prevent Keycloak offline-session expiry (default true)."},
-				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model list. Each item can have id, name, alias, context, max_tokens, enabled, reasoning."},
-				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick highest remaining). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
+				{Name: "desensitize", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Insert U+200B into configured blocked terms in system/developer prompt text and tool title/description fields (default false)."},
+				{Name: "desensitize_terms", Type: pluginapi.ConfigFieldTypeArray, Description: "Editable literal term list for desensitize; missing uses the built-in 85 terms and [] means an empty custom list."},
+				{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Optional model IDs, single-line strings only. A non-empty list is the complete catalog and bypasses WorkBuddy catalog HTTP and cache; models.dev metadata fetch and cache still apply. Missing, null, or [] keeps dynamic WorkBuddy discovery."},
+				{Name: "oauth_client_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{oauthClientModeCLI, oauthClientModeWorkBuddy}, Description: "OAuth request profile: cli (default) or explicit WorkBuddy desktop profile."},
+				{Name: "enterprise_credits", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Probe strict CN enterprise credits before personal resource packages (default false; Global unchanged)."},
+				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional Bearer key enforced by WorkBuddy for mutating management endpoints; also env WB_MANAGEMENT_KEY."},
+				{Name: "proxy-url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional plugin-level proxy for all WorkBuddy HTTP traffic. Supports http, https, socks5, and socks5h; empty preserves existing routing and host-bridged calls inherit CPA. Invalid settings fail closed. Explicit proxy traffic bypasses CPA request-log."},
+				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (pick the panel-selected account, with non-exhausted fallback). WARNING: when off + lifecycle_auto=false, exhausted accounts may still be routed — enable lifecycle_auto or set scheduler_mode=credits."},
 				{Name: "usage_report_url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional override of CPAMP usage import URL (default http://cpa-manager-plus:18317/v0/management/usage/import; also env USAGE_REPORT_URL)."},
 				{Name: "usage_report_key", Type: pluginapi.ConfigFieldTypeString, Description: "Optional CPAMP admin key override. Prefer auto-detect from env CPAMP_ADMIN_KEY / USAGE_REPORT_KEY or secret file /run/secrets/cpamp_admin_key."},
 			},
@@ -364,23 +379,10 @@ func wbRegistration() registration {
 	}
 }
 
-// dynamicModelsCacheTTL bounds how long a fetched model list is reused.
-// model.static / model.for_auth are re-invoked by CPA on every config reload
-// and on each models query; without caching, every reload fans out to one
-// upstream call per account.
-const dynamicModelsCacheTTL = 5 * time.Minute
-
-var dynamicModelsCache struct {
-	sync.RWMutex
-	models  []pluginapi.ModelInfo
-	fetched time.Time
-}
-
 //
 // CPA applies oauth-model-alias to the models this plugin registers, so the
-// gateway may route a request whose model ID is an alias (e.g.
-// "point/deepseek-v4-flash") to this executor. The upstream only knows the
-// real model IDs, so the plugin must map the alias back before forwarding.
+// gateway may route "client-alias" to this executor while the upstream only
+// knows "upstream-model". The plugin must map the alias back before forwarding.
 //
 // ExecutorRequest carries no host config, so the alias table is cached from
 // the AuthModelRequest.Host summary every time the host asks for models
@@ -531,10 +533,6 @@ func endpointTokenRefreshFor(sa *storedAuth) string {
 	return upstreamBaseFor(sa) + "/v2/plugin/auth/token/refresh"
 }
 
-func endpointModelsFor(sa *storedAuth) string {
-	return upstreamBaseFor(sa) + "/console/enterprises/personal/models"
-}
-
 // backendHeaders applies auth-derived headers to a chat completion request.
 // Empty fields are signalled via the X-No-* convention used by CodeBuddy.
 func backendHeaders(req *http.Request, sa *storedAuth) {
@@ -564,11 +562,31 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 		req.Header.Set("X-No-Department-Info", "1")
 	}
 	req.Header.Set("X-Product", "SaaS")
+	// Client-identifying headers. Tencent's billing/usage backend uses these to
+	// populate the "client" (客户端) field; without them requests show as empty.
+	req.Header.Set("X-IDE-Type", "CLI")
+	req.Header.Set("X-IDE-Name", "CLI")
+	req.Header.Set("X-IDE-Version", "2.63.2")
+	req.Header.Set("X-Agent-Intent", "craft")
+	req.Header.Set("X-Request-ID", randomHex(16))
+	req.Header.Set("X-Conversation-ID", randomHex(16))
+	req.Header.Set("X-Conversation-Request-ID", randomHex(16))
+	req.Header.Set("X-Conversation-Message-ID", randomHex(16))
 	// Override Origin/Referer for Global accounts so the upstream doesn't
 	// reject the request as cross-origin.
 	origin := originRefererFor(sa)
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
+}
+
+// randomHex returns n random bytes hex-encoded. CodeBuddy conversation/request
+// IDs are 32-char hex strings; this keeps them UUID-free but stable enough.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%0*x", n*2, time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }
 
 // -----------------------------------------------------------------------------
@@ -660,17 +678,36 @@ func toAuthDataOpts(sa *storedAuth, cr *creditsSummary, disabled bool) pluginapi
 
 // -----------------------------------------------------------------------------
 
+func guardExecutorReadiness(authID string) []byte {
+	if currentModelRuntime().snapshotForAuthID(authID).State.executable() {
+		return nil
+	}
+	return errorEnvelopeWithStatus(
+		"not_ready",
+		"WorkBuddy model catalog is not ready",
+		http.StatusServiceUnavailable,
+	)
+}
+
+type executorRequestWire struct {
+	pluginapi.ExecutorRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 func handleExecExecute(raw []byte) ([]byte, error) {
-	var req pluginapi.ExecutorRequest
+	var req executorRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
+	}
+	if blocked := guardExecutorReadiness(req.AuthID); blocked != nil {
+		return blocked, nil
 	}
 	sa, err := parseStored(req.StorageJSON)
 	if err != nil {
 		return nil, err
 	}
-	// Resolve oauth-model-alias (e.g. "point/deepseek-v4-flash") back to the
-	// real upstream model ID; the upstream rejects unknown alias IDs.
+	// Resolve oauth-model-alias ("client-alias" -> "upstream-model") before
+	// forwarding; the upstream rejects unknown alias IDs.
 	upstreamModel := resolveUpstreamModel(req.Model, req.AuthAttributes)
 	started := time.Now()
 	authUID := ""
@@ -689,7 +726,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the
 	// outbound call. Read entire body via the bridge, then fold SSE → completion.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, req.HostCallbackID)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		return nil, fmt.Errorf("http_error: %w", err)
@@ -700,7 +737,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 		payload, _ := io.ReadAll(reader)
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
 		reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
-		return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
+		return errorEnvelopeWithStatus("http_error", fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200)), statusCode), nil
 	}
 	completion, err := aggregateCompletion(reader, req.Model)
 	if err != nil {
@@ -725,6 +762,9 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
+	if blocked := guardExecutorReadiness(req.AuthID); blocked != nil {
+		return blocked, nil
+	}
 	sa, err := parseStored(req.StorageJSON)
 	if err != nil {
 		return nil, err
@@ -748,9 +788,13 @@ func handleExecStream(raw []byte) ([]byte, error) {
 	// No async stream id → fall back to synchronous chunk collection.
 	if req.StreamID == "" {
 		collector := &sseUsageCollector{}
-		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector)
+		chunks, statusCode, errCollect := collectUpstreamStream(body, sa, sseFramed, collector, req.HostCallbackID)
 		if errCollect != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, errCollect.Error())
+			var statusErr *upstreamStatusError
+			if errors.As(errCollect, &statusErr) {
+				return errorEnvelopeWithStatus("http_error", redactSecrets(statusErr.Error()), statusErr.status), nil
+			}
 			return nil, errCollect
 		}
 		publishUsage(req.Model, upstreamModel, authUID, started, collector.detail(), false, 0, "")
@@ -772,7 +816,7 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 	backendHeaders(httpReq, sa)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID)
+	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 
@@ -788,6 +832,11 @@ func okEnvelope(v any) ([]byte, error) {
 
 func errorEnvelope(code, message string) []byte {
 	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message}})
+	return raw
+}
+
+func errorEnvelopeWithStatus(code, message string, status int) []byte {
+	raw, _ := json.Marshal(envelope{OK: false, Error: &envelopeError{Code: code, Message: message, HTTPStatus: status}})
 	return raw
 }
 

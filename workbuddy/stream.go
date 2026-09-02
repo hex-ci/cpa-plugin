@@ -21,6 +21,15 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+var streamHostCall = hostCall
+
+type upstreamStatusError struct {
+	status  int
+	message string
+}
+
+func (e *upstreamStatusError) Error() string { return e.message }
+
 // streamEmit pushes one chunk payload to the host stream. Returns an error if
 // the host rejected it (e.g. the client already disconnected and the stream
 // was closed), which the pump uses to stop reading a dead upstream.
@@ -29,25 +38,32 @@ func streamEmit(streamID string, payload []byte) error {
 		return fmt.Errorf("no stream id")
 	}
 	body, _ := json.Marshal(map[string]any{"stream_id": streamID, "payload": payload})
-	_, err := hostCall(pluginabi.MethodHostStreamEmit, body)
+	_, err := streamHostCall(pluginabi.MethodHostStreamEmit, body)
 	return err
+}
+
+func streamErrorWire(streamID, message string) []byte {
+	raw, _ := json.Marshal(map[string]any{"stream_id": streamID, "error": redactSecrets(message)})
+	return raw
+}
+
+func streamCloseWire(streamID string) []byte {
+	raw, _ := json.Marshal(map[string]any{"stream_id": streamID})
+	return raw
 }
 
 func streamEmitError(streamID, message string) {
 	if streamID == "" {
 		return
 	}
-	// A-37: never emit raw upstream bodies that may contain Bearer/JWT.
-	errJSON, _ := json.Marshal(map[string]any{"error": map[string]any{"message": redactSecrets(message)}})
-	_ = streamEmit(streamID, errJSON)
+	_, _ = streamHostCall(pluginabi.MethodHostStreamEmit, streamErrorWire(streamID, message))
 }
 
 func streamClose(streamID string) {
 	if streamID == "" {
 		return
 	}
-	body, _ := json.Marshal(map[string]any{"stream_id": streamID})
-	_, _ = hostCall(pluginabi.MethodHostStreamClose, body)
+	_, _ = streamHostCall(pluginabi.MethodHostStreamClose, streamCloseWire(streamID))
 }
 
 func streamHeaders() http.Header {
@@ -68,7 +84,7 @@ func streamHeaders() http.Header {
 // the outbound call and host transport policy applies. The host bridge emits
 // arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
 // SSE line framing unchanged.
-func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string) {
+func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, callbackID string) {
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -83,7 +99,7 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		defer cancel()
 	}
 
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
 	if err != nil {
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		streamEmitError(streamID, fmt.Sprintf("http_error: %v", err))
@@ -103,16 +119,21 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 	collector := &sseUsageCollector{}
 	scanner := bufio.NewScanner(newHostStreamReader(stream))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	validEvents := 0
 	for scanner.Scan() {
 		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
+		if content == "" {
 			continue
+		}
+		if content == "[DONE]" {
+			break
 		}
 		collector.feed(content)
 		cleaned := cleanChunkJSON(content)
-		if cleaned == "" {
+		if cleaned == "" || !json.Valid([]byte(cleaned)) {
 			continue
 		}
+		validEvents++
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
@@ -129,6 +150,11 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 		streamEmitError(streamID, fmt.Sprintf("upstream stream read error: %v", err))
 		return
 	}
+	if validEvents == 0 {
+		publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), true, 0, "empty upstream stream")
+		streamEmitError(streamID, "empty upstream stream")
+		return
+	}
 	publishUsage(requestedModel, upstreamModel, authUID, started, collector.detail(), false, 0, "")
 	invalidateAccountCredits(authID, authUID)
 }
@@ -137,14 +163,14 @@ func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, stream
 // the upstream, clean each chunk, return them as a slice. The collector, when
 // non-nil, observes raw upstream chunks for usage extraction. statusCode is the
 // upstream HTTP status (0 for transport-level failures).
-func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector) ([]pluginapi.ExecutorStreamChunk, int, error) {
+func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collector *sseUsageCollector, callbackID string) ([]pluginapi.ExecutorStreamChunk, int, error) {
 	httpReq, err := http.NewRequest(http.MethodPost, endpointChatFor(sa), bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	backendHeaders(httpReq, sa)
 	// Compliance: route via host.http.do_stream so request-log captures the call.
-	stream, statusCode, _, err := hostHTTPDoStream(httpReq)
+	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("http_error: %w", err)
 	}
@@ -155,7 +181,10 @@ func collectUpstreamStream(body []byte, sa *storedAuth, sseFramed bool, collecto
 		if sa != nil && sa.Account.UID != "" {
 			go reconcileByUID(sa.Account.UID, statusCode, string(errPayload))
 		}
-		return nil, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200))
+		return nil, statusCode, &upstreamStatusError{
+			status:  statusCode,
+			message: fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200)),
+		}
 	}
 	chunks, errAgg := aggregateSSEWithCollector(reader, sseFramed, collector)
 	if errAgg != nil {
@@ -193,18 +222,23 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	var chunks []pluginapi.ExecutorStreamChunk
+	validEvents := 0
 	for scanner.Scan() {
 		content := stripDataPrefix(scanner.Text())
-		if content == "" || content == "[DONE]" {
+		if content == "" {
 			continue
+		}
+		if content == "[DONE]" {
+			break
 		}
 		if collector != nil {
 			collector.feed(content)
 		}
 		cleaned := cleanChunkJSON(content)
-		if cleaned == "" {
+		if cleaned == "" || !json.Valid([]byte(cleaned)) {
 			continue
 		}
+		validEvents++
 		if sseFramed {
 			cleaned = "data: " + cleaned
 		}
@@ -212,6 +246,9 @@ func aggregateSSEWithCollector(r io.Reader, sseFramed bool, collector *sseUsageC
 	}
 	if err := scanner.Err(); err != nil {
 		return chunks, fmt.Errorf("upstream stream read error: %w", err)
+	}
+	if validEvents == 0 {
+		return chunks, fmt.Errorf("upstream stream contained no valid data events")
 	}
 	return chunks, nil
 }
@@ -288,13 +325,17 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	toolCalls := map[int]map[string]any{}
 	var toolOrder []int
 	var scanErr error
+	sawChoice := false
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		data := stripDataPrefix(scanner.Text())
-		if data == "" || data == "[DONE]" {
+		if data == "" {
 			continue
+		}
+		if data == "[DONE]" {
+			break
 		}
 		var chunk map[string]any
 		if json.Unmarshal([]byte(data), &chunk) != nil {
@@ -313,6 +354,9 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 			usage = v
 		}
 		choices, _ := chunk["choices"].([]any)
+		if len(choices) > 0 {
+			sawChoice = true
+		}
 		for _, c := range choices {
 			choice, _ := c.(map[string]any)
 			if delta, ok := choice["delta"].(map[string]any); ok {
@@ -359,6 +403,9 @@ func aggregateCompletion(r io.Reader, model string) ([]byte, error) {
 	// of assembling a partial completion nobody can safely consume.
 	if scanErr != nil {
 		return nil, fmt.Errorf("upstream stream read error: %w", scanErr)
+	}
+	if !sawChoice {
+		return nil, fmt.Errorf("upstream stream contained no valid completion events")
 	}
 
 	message := map[string]any{"role": firstNonEmpty(role, "assistant"), "content": content}

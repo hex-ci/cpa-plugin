@@ -8,12 +8,23 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const userResourceConcurrency = 4
+
+var userResourceSlots = make(chan struct{}, userResourceConcurrency)
+
+func acquireUserResourceSlot() func() {
+	userResourceSlots <- struct{}{}
+	return func() { <-userResourceSlots }
+}
 
 // isGlobalDomain reports whether the domain belongs to the international
 // (www.workbuddy.ai) WorkBuddy service.  The CN service uses
@@ -85,13 +96,17 @@ func billingHeaders(req *http.Request, sa *storedAuth) {
 }
 
 func billingCall(sa *storedAuth, path string, body any) (json.RawMessage, error) {
-	data, err := billingCallOnce(sa, path, body)
+	return billingCallWithCallback(sa, path, body, "")
+}
+
+func billingCallWithCallback(sa *storedAuth, path string, body any, callbackID string) (json.RawMessage, error) {
+	data, err := billingCallOnceWithCallback(sa, path, body, callbackID)
 	for _, d := range billingRetryDelays {
 		if err == nil || !isTransientBillingErr(err) {
 			break
 		}
 		time.Sleep(d)
-		data, err = billingCallOnce(sa, path, body)
+		data, err = billingCallOnceWithCallback(sa, path, body, callbackID)
 	}
 	return data, err
 }
@@ -107,6 +122,10 @@ func isTransientBillingErr(err error) bool {
 }
 
 func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, error) {
+	return billingCallOnceWithCallback(sa, path, body, "")
+}
+
+func billingCallOnceWithCallback(sa *storedAuth, path string, body any, callbackID string) (json.RawMessage, error) {
 	var reader *bytes.Reader
 	if body != nil {
 		raw, _ := json.Marshal(body)
@@ -122,7 +141,7 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 	billingHeaders(req, sa)
 	// Route via host.http.do so request-log captures the call (v0.8.1 compliance:
 	// was sharedHTTPClient().Do — bypassed host transport policy + logging).
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoWithCallback(req, callbackID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,10 +175,14 @@ func billingCallOnce(sa *storedAuth, path string, body any) (json.RawMessage, er
 }
 
 func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
+	return fetchCheckinStatusWithCallback(sa, "")
+}
+
+func fetchCheckinStatusWithCallback(sa *storedAuth, callbackID string) (*checkinSummary, error) {
 	var data json.RawMessage
 	var lastErr error
 	for _, path := range []string{"/v2/billing/meter/checkin-activity-status", "/v2/billing/meter/checkin-status"} {
-		d, err := billingCall(sa, path, nil)
+		d, err := billingCallWithCallback(sa, path, nil, callbackID)
 		if err == nil {
 			data = d
 			lastErr = nil
@@ -267,46 +290,84 @@ func packageRemainUsed(a resourcePackage) (remain, used, size int64) {
 	return remain, used, size
 }
 
+var errEnterpriseCreditsUnsupported = errors.New("enterprise credits unsupported")
+
 func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
-	// Enterprise members have no personal packages; get-user-resource
-	// returns an empty list for them.
-	if isEnterpriseAccount(sa) {
-		return fetchEnterpriseResource(sa)
+	return fetchUserResourceWithCallback(sa, "")
+}
+
+func fetchUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsSummary, error) {
+	release := acquireUserResourceSlot()
+	defer release()
+
+	cfg := currentFeatureRuntime()
+	// Enterprise detection. Automatic identification (stored enterpriseId) wins
+	// unless the operator explicitly configured enterprise_credits; then the
+	// config + region gate takes over. Both routes hit the enterprise pool.
+	automatic := isEnterpriseAccount(sa) && (cfg == nil || !cfg.enterpriseCreditsExplicit)
+	configured := cfg != nil && cfg.enterpriseCredits && accountRegion(sa) == "cn"
+	if automatic || configured {
+		credits, err := fetchEnterpriseCreditsCN(sa, callbackID)
+		if err == nil {
+			return credits, nil
+		}
+		if !errors.Is(err, errEnterpriseCreditsUnsupported) {
+			return nil, err
+		}
 	}
+	return fetchPersonalUserResourceWithCallback(sa, callbackID)
+}
+
+func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsSummary, error) {
 	now := time.Now()
-	// Status 0=active, 3=exhausted-but-still-listed. PageSize 100 covers the
-	// multi-pack free accounts we see in production; paginate if TotalCount
-	// ever exceeds it.
+	// Status 0=active, 3=exhausted-but-still-listed.
 	const pageSize = 100
-	body := map[string]any{
-		"PageNumber":               1,
+	baseBody := map[string]any{
 		"PageSize":                 pageSize,
 		"ProductCode":              "p_tcaca",
 		"Status":                   []int{0, 3},
 		"PackageEndTimeRangeBegin": now.Format("2006-01-02 15:04:05"),
 		"PackageEndTimeRangeEnd":   now.Add(365 * 101 * 24 * time.Hour).Format("2006-01-02 15:04:05"),
 	}
-	data, err := billingCall(sa, "/v2/billing/meter/get-user-resource", body)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Response struct {
-			Data struct {
-				TotalCount  int64             `json:"TotalCount"`
-				TotalDosage int64             `json:"TotalDosage"` // package capacity pool, NOT consumption
-				Accounts    []resourcePackage `json:"Accounts"`
-			} `json:"Data"`
-		} `json:"Response"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, err
+	var all []resourcePackage
+	var totalCount int64
+	var totalDosage int64
+	for page := 1; ; page++ {
+		body := make(map[string]any, len(baseBody)+1)
+		for k, v := range baseBody {
+			body[k] = v
+		}
+		body["PageNumber"] = page
+		data, err := billingCallWithCallback(sa, "/v2/billing/meter/get-user-resource", body, callbackID)
+		if err != nil {
+			return nil, err
+		}
+		var resp struct {
+			Response struct {
+				Data struct {
+					TotalCount  int64             `json:"TotalCount"`
+					TotalDosage int64             `json:"TotalDosage"` // package capacity pool, NOT consumption
+					Accounts    []resourcePackage `json:"Accounts"`
+				} `json:"Data"`
+			} `json:"Response"`
+		}
+		if err := json.Unmarshal(data, &resp); err != nil {
+			return nil, err
+		}
+		if page == 1 {
+			totalCount = resp.Response.Data.TotalCount
+			totalDosage = resp.Response.Data.TotalDosage
+		}
+		all = append(all, resp.Response.Data.Accounts...)
+		if len(resp.Response.Data.Accounts) < pageSize || (totalCount > 0 && totalCount <= int64(len(all))) {
+			break
+		}
 	}
 	// Aggregate ALL packages (体验版 + 多个签到/裂变包 + 其它赠送包).
 	// Remain = currently spendable. Used = consumed this cycle. Size = capacity.
 	// Daily check-in adds packages → Size and Remain go UP; that is grant, not usage.
 	sum := &creditsSummary{}
-	for _, a := range resp.Response.Data.Accounts {
+	for _, a := range all {
 		remain, used, size := packageRemainUsed(a)
 		sum.TotalRemain += remain
 		sum.TotalUsed += used
@@ -334,8 +395,8 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 	}
 	// Upstream TotalDosage is the capacity pool (~sum of package sizes), not spend.
 	// Use it only as a size floor when pack sizes look incomplete.
-	if dosage := resp.Response.Data.TotalDosage; dosage > sum.TotalSize {
-		sum.TotalSize = dosage
+	if totalDosage > sum.TotalSize {
+		sum.TotalSize = totalDosage
 		derived := sum.TotalSize - sum.TotalRemain
 		if derived < 0 {
 			derived = 0
@@ -344,63 +405,151 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 			sum.TotalUsed = derived
 		}
 	}
-	_ = resp.Response.Data.TotalCount
 	return sum, nil
 }
 
-// fetchEnterpriseResource reads the enterprise usage pool: the upstream
-// reports the cycle cap (limitNum) and the already-consumed amount (credit),
-// so remain = limitNum − credit. Quota resets per cycle (cycleResetTime).
-func fetchEnterpriseResource(sa *storedAuth) (*creditsSummary, error) {
-	data, err := billingCall(sa, "/v2/billing/meter/get-enterprise-user-usage", map[string]any{})
+func fetchEnterpriseCreditsCN(sa *storedAuth, callbackID string) (*creditsSummary, error) {
+	req, err := http.NewRequest(http.MethodPost, billingBaseFor(sa)+"/billing/meter/get-enterprise-user-usage", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return nil, err
 	}
-	var m struct {
-		Credit         float64 `json:"credit"`
-		LimitNum       float64 `json:"limitNum"`
-		CycleStartTime string  `json:"cycleStartTime"`
-		CycleEndTime   string  `json:"cycleEndTime"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
+	billingHeaders(req, sa)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("X-Client-Platform", "web")
+	req.Header.Set("Origin", "https://www.codebuddy.cn")
+	req.Header.Set("Referer", "https://www.codebuddy.cn/")
+
+	resp, err := hostHTTPDoWithCallback(req, callbackID)
+	if err != nil {
 		return nil, err
 	}
-	// Round to whole units: the credits summary is integer-based.
-	size := int64(math.Round(m.LimitNum))
-	used := int64(math.Round(m.Credit))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, classifyEnterpriseHTTPStatus(resp.StatusCode)
+	}
+	return parseEnterpriseCredits(resp.Body)
+}
+
+func classifyEnterpriseHTTPStatus(status int) error {
+	if status == http.StatusNotFound {
+		return fmt.Errorf("enterprise credits status %d: %w", status, errEnterpriseCreditsUnsupported)
+	}
+	return fmt.Errorf("enterprise credits status %d", status)
+}
+
+func parseEnterpriseCredits(raw []byte) (*creditsSummary, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, fmt.Errorf("parse enterprise credits: %w", err)
+	}
+	codeRaw, ok := envelope["code"]
+	if !ok {
+		return nil, errors.New("enterprise credits response missing code")
+	}
+	var code *int
+	if err := json.Unmarshal(codeRaw, &code); err != nil || code == nil || *code != 0 {
+		return nil, errors.New("enterprise credits response rejected")
+	}
+	dataRaw, ok := envelope["data"]
+	if !ok {
+		return nil, errors.New("enterprise credits response missing data")
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(dataRaw, &data); err != nil || data == nil {
+		return nil, errors.New("enterprise credits response has invalid data")
+	}
+	credit, err := enterpriseCreditNumber(data, "credit")
+	if err != nil {
+		return nil, err
+	}
+	limit, err := enterpriseCreditNumber(data, "limitNum")
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, errors.New("enterprise credits limit must be positive")
+	}
+	used, err := roundedEnterpriseCredits(credit)
+	if err != nil {
+		return nil, err
+	}
+	size, err := roundedEnterpriseCredits(limit)
+	if err != nil {
+		return nil, err
+	}
 	remain := size - used
 	if remain < 0 {
 		remain = 0
 	}
-	if used < 0 {
-		used = 0
-	}
-	if size < 0 {
-		size = remain + used
-	}
-	sum := &creditsSummary{
+	return &creditsSummary{
 		TotalRemain: remain,
 		TotalUsed:   used,
 		TotalSize:   size,
 		PackCount:   1,
 		Packages: []packageSummary{{
-			Name:       "企业版周期额度",
+			Name:       "Enterprise",
 			Remain:     remain,
 			Used:       used,
 			Size:       size,
-			CycleStart: m.CycleStartTime,
-			CycleEnd:   m.CycleEndTime,
+			CycleStart: enterpriseCreditString(data["cycleStartTime"]),
+			CycleEnd:   enterpriseCreditString(data["cycleEndTime"]),
 		}},
+	}, nil
+}
+
+func enterpriseCreditNumber(data map[string]json.RawMessage, key string) (float64, error) {
+	raw, ok := data[key]
+	if !ok {
+		return 0, fmt.Errorf("enterprise credits response missing %s", key)
 	}
-	return sum, nil
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return 0, fmt.Errorf("enterprise credits response has invalid %s", key)
+	}
+	var text string
+	switch v := value.(type) {
+	case json.Number:
+		text = v.String()
+	case string:
+		text = v
+	default:
+		return 0, fmt.Errorf("enterprise credits response has invalid %s", key)
+	}
+	number, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+		return 0, fmt.Errorf("enterprise credits response has invalid %s", key)
+	}
+	return number, nil
+}
+
+func roundedEnterpriseCredits(value float64) (int64, error) {
+	rounded := math.Round(value)
+	if rounded >= 1<<63 {
+		return 0, errors.New("enterprise credits value is too large")
+	}
+	return int64(rounded), nil
+}
+
+func enterpriseCreditString(raw json.RawMessage) string {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
 }
 
 func fetchPaymentType(sa *storedAuth) string {
-	// Personal get-payment-type reports "free" for enterprise members.
+	return fetchPaymentTypeWithCallback(sa, "")
+}
+
+func fetchPaymentTypeWithCallback(sa *storedAuth, callbackID string) string {
+	// Personal get-payment-type reports "free" for enterprise members; the
+	// stored enterpriseId is the authoritative account-type signal.
 	if isEnterpriseAccount(sa) {
 		return "enterprise"
 	}
-	data, err := billingCall(sa, "/v2/billing/meter/get-payment-type", nil)
+	data, err := billingCallWithCallback(sa, "/v2/billing/meter/get-payment-type", nil, callbackID)
 	if err != nil {
 		return ""
 	}
@@ -415,7 +564,11 @@ func fetchPaymentType(sa *storedAuth) string {
 }
 
 func performCheckinCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/v2/billing/meter/daily-checkin", nil)
+	return performCheckinCallWithCallback(sa, "")
+}
+
+func performCheckinCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
+	data, err := billingCallWithCallback(sa, "/v2/billing/meter/daily-checkin", nil, callbackID)
 	if err != nil {
 		// billingCall returns business errors (code != 0) as Go errors; surface
 		// them as a structured result so the panel can show "already checked in".
@@ -438,7 +591,11 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 // Pro Plan Trial".
 // Repeat call: code=14051 "has applied trial" — surfaced as already_claimed.
 func performTrialCall(sa *storedAuth) (map[string]any, error) {
-	data, err := billingCall(sa, "/billing/ide/trial", nil)
+	return performTrialCallWithCallback(sa, "")
+}
+
+func performTrialCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
+	data, err := billingCallWithCallback(sa, "/billing/ide/trial", nil, callbackID)
 	if err != nil {
 		msg := err.Error()
 		// code=14051 means the trial has already been claimed — not a real error.

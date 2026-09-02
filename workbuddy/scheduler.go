@@ -77,6 +77,9 @@ func handleSchedulerPick(raw []byte) ([]byte, error) {
 		if candidateDisabled(c) {
 			continue
 		}
+		if !currentModelRuntime().snapshotForAuthID(c.ID).State.executable() {
+			continue
+		}
 		wbCandidates = append(wbCandidates, c)
 	}
 	if len(wbCandidates) == 0 {

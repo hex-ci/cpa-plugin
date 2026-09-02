@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,8 +64,10 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 		if legacyPath != "" {
 			dir := filepath.Dir(legacyPath)
 			legacyFile := filepath.Join(dir, authFileName)
-			// A-35: use deleteAuthFileInDir for absolute path + directory confinement.
-			_ = deleteAuthFileInDir(legacyFile, dir)
+			legacyRaw, readErr := os.ReadFile(legacyFile)
+			if readErr == nil && shouldDeleteLegacyForUID(legacyRaw, sa.Account.UID) {
+				_ = deleteAuthFileInDir(legacyFile, dir)
+			}
 		}
 	}
 	return map[string]any{
@@ -98,6 +101,10 @@ func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 // handleClaimTrial claims the expert trial pack for one Global account.
 // CN accounts are rejected — the trial endpoint is Global-only.
 func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
+	return handleClaimTrialWithCallback(req, "")
+}
+
+func handleClaimTrialWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
 	}
@@ -121,7 +128,7 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 		if !isGlobalDomain(sa.Auth.Domain) {
 			return map[string]any{"auth_index": authIndex, "error": "专家加油包仅适用于国际版账号"}
 		}
-		res, err := performTrialCall(sa)
+		res, err := performTrialCallWithCallback(sa, callbackID)
 		out := map[string]any{"auth_index": authIndex, "nickname": displayNameFor(sa)}
 		if err != nil {
 			out["error"] = err.Error()
@@ -140,7 +147,7 @@ func handleClaimTrial(req pluginapi.ManagementRequest) map[string]any {
 			}
 		}
 		if lifecycleEnabled() {
-			_, _ = reconcileOneAccount(authIndex, f.ID, true)
+			_, _ = reconcileOneAccountWithCallback(authIndex, f.ID, true, callbackID)
 		}
 		return out
 	}
@@ -191,6 +198,10 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 // exhausted, trial_claimed) so the panel can update one card without
 // reloading the entire dashboard.
 func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
+	return handleCreditsQueryWithCallback(req, "")
+}
+
+func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
 	authIndex := ""
 	if vals := req.Query["auth_index"]; len(vals) > 0 {
 		authIndex = strings.TrimSpace(vals[0])
@@ -211,7 +222,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 					"auth_index": authIndex, "error": "load auth: " + err.Error(),
 				}}}
 			}
-			cr, err := fetchUserResource(sa)
+			cr, err := fetchUserResourceWithCallback(sa, callbackID)
 			acct := map[string]any{
 				"auth_index": authIndex,
 				"nickname":   displayNameFor(sa),
@@ -232,7 +243,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 					acct["trial_claimed"] = hasTrialPack(cr)
 				}
 				// Also fetch plan so the badge updates on lazy load.
-				acct["plan"] = fetchPaymentType(sa)
+				acct["plan"] = fetchPaymentTypeWithCallback(sa, callbackID)
 				// Update cache so subsequent dashboard loads see fresh data.
 				now := time.Now()
 				if cr != nil {
@@ -271,7 +282,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 			out = append(out, acctCredits{AuthIndex: f.AuthIndex, Error: "load auth: " + err.Error()})
 			continue
 		}
-		cr, err := fetchUserResource(sa)
+		cr, err := fetchUserResourceWithCallback(sa, callbackID)
 		ac := acctCredits{AuthIndex: f.AuthIndex, Nickname: displayNameFor(sa), UID: sa.Account.UID}
 		if err != nil {
 			ac.Error = err.Error()

@@ -144,3 +144,18 @@ func TestToAuthData_LoginImportStillSetsUIDFileName(t *testing.T) {
 		t.Fatalf("login FileName=%q", ad.FileName)
 	}
 }
+
+func TestToAuthDataForLoginPollKeepsCanonicalFileNameAndClearsID(t *testing.T) {
+	sa := &storedAuth{
+		Auth:    storedTokens{AccessToken: "at", RefreshToken: "rt"},
+		Account: storedAccount{UID: "uid-1", Nickname: "nick"},
+	}
+
+	got := toAuthDataForLoginPoll(sa)
+	if got.ID != "" {
+		t.Fatalf("poll ID = %q, want path-derived empty ID", got.ID)
+	}
+	if got.FileName != "workbuddy-uid-1.json" {
+		t.Fatalf("poll filename = %q", got.FileName)
+	}
+}

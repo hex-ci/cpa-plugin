@@ -16,7 +16,7 @@ func decodeBody(t *testing.T, b []byte) map[string]any {
 }
 
 func TestNormalizeToolsOpenAIObjectForce(t *testing.T) {
-	in := []byte(`{"model":"deepseek-v4-flash","tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}`)
+	in := []byte(`{"model":"serve-alpha","tools":[{"type":"function","function":{"name":"get_weather"}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}`)
 	got := normalizeToolsForUpstream(in)
 	obj := decodeBody(t, got)
 	tc, _ := obj["tool_choice"].(string)
@@ -126,18 +126,18 @@ func TestNormalizeToolsFunctionObjectMissingNameFallsBackAuto(t *testing.T) {
 // stream=true after all rewrites (regression for the 11101 object error).
 func TestPipelineObjectToolChoiceEndsAsString(t *testing.T) {
 	in := []byte(`{
-		"model":"point/deepseek-v4-flash",
+		"model":"point/serve-alpha",
 		"stream":false,
 		"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}],
 		"tool_choice":{"type":"function","function":{"name":"get_weather"}},
 		"messages":[{"role":"user","content":"Weather in Tokyo?"}]
 	}`)
-	body := rewriteModelInBody(normalizeToolsForUpstream(rewriteSystemForUpstream(forceStreamBody(in, nil))), "deepseek-v4-flash")
+	body := rewriteModelInBody(normalizeToolsForUpstream(rewriteSystemForUpstream(forceStreamBody(in, nil))), "serve-beta")
 	obj := decodeBody(t, body)
 	if obj["stream"] != true {
 		t.Fatalf("stream not forced: %#v", obj["stream"])
 	}
-	if obj["model"] != "deepseek-v4-flash" {
+	if obj["model"] != "serve-beta" {
 		t.Fatalf("model not rewritten: %#v", obj["model"])
 	}
 	tc, ok := obj["tool_choice"].(string)

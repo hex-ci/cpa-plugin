@@ -3,7 +3,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	_ "embed"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -32,15 +39,100 @@ type wbAccount struct {
 	Error        string          `json:"error,omitempty"`
 }
 
+type modelStatus struct {
+	State             modelReadinessState `json:"state"`
+	Message           string              `json:"message"`
+	MetadataSource    modelSnapshotSource `json:"metadata_source"`
+	MetadataFetchedAt string              `json:"metadata_fetched_at"`
+	Auths             []modelAuthStatus   `json:"auths"`
+}
+
+type modelAuthStatus struct {
+	AuthIndex       string              `json:"auth_index"`
+	State           modelReadinessState `json:"state"`
+	ModelSource     modelSnapshotSource `json:"model_source"`
+	ModelsFetchedAt string              `json:"models_fetched_at"`
+	ErrorCode       modelErrorCode      `json:"error_code"`
+}
+
+var modelStatusMessages = map[modelReadinessState]string{
+	modelReady:      "模型目录已就绪",
+	modelStale:      "模型目录刷新失败，正在使用上次有效缓存",
+	modelFailed:     "模型目录不可用",
+	modelLoading:    "模型目录正在初始化",
+	modelNotStarted: "模型目录尚未初始化",
+}
+
+var modelStatePriority = map[modelReadinessState]int{
+	modelReady:      1,
+	modelStale:      2,
+	modelNotStarted: 3,
+	modelLoading:    4,
+	modelFailed:     5,
+}
+
+var panelHostAuthList = hostAuthList
+
+func buildModelStatus(files []pluginapi.HostAuthFileEntry) modelStatus {
+	runtime := activeModelRuntime.Load()
+	metadata := modelMetadataStatus{Source: modelSourceNone}
+	if runtime != nil {
+		metadata = runtime.metadataStatus()
+	}
+	state := modelReady
+	if len(files) == 0 {
+		state = modelNotStarted
+	}
+	auths := make([]modelAuthStatus, 0, len(files))
+	for _, file := range files {
+		snapshot := modelReadinessSnapshot{State: modelNotStarted, ModelSource: modelSourceNone}
+		if runtime != nil {
+			snapshot = runtime.snapshotForAuthID(file.ID)
+		}
+		auths = append(auths, modelAuthStatus{
+			AuthIndex:       file.AuthIndex,
+			State:           snapshot.State,
+			ModelSource:     snapshot.ModelSource,
+			ModelsFetchedAt: modelStatusTime(snapshot.ModelsFetchedAt),
+			ErrorCode:       snapshot.ErrorCode,
+		})
+		if modelStatePriority[snapshot.State] > modelStatePriority[state] {
+			state = snapshot.State
+		}
+	}
+	return modelStatus{
+		State:             state,
+		Message:           modelStatusMessages[state],
+		MetadataSource:    metadata.Source,
+		MetadataFetchedAt: modelStatusTime(metadata.FetchedAt),
+		Auths:             auths,
+	}
+}
+
+func modelStatusTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
 // credits/checkin/plan fields are left empty — the panel renders skeletons
 // and fetches them lazily via /credits?auth_index=<idx>. This avoids hitting
 // upstream billing APIs for all accounts simultaneously on page load (which
 // causes 500 from rate-limited /v2/billing/meter/get-user-resource).
 func buildDashboardEx(force, fetchCredits bool) map[string]any {
-	files, err := hostAuthList()
+	return buildDashboardExWithCallback(force, fetchCredits, "")
+}
+
+func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) map[string]any {
+	files, err := panelHostAuthList()
 	if err != nil {
-		return map[string]any{"error": err.Error()}
+		return map[string]any{
+			"error":        err.Error(),
+			"model_status": buildModelStatus(nil),
+		}
 	}
+	statusFiles := files
 	// Prune cache entries for accounts that no longer exist (auth deleted via
 	// CPA UI) or whose TTL expired long ago. Without this, accountCache grows
 	// monotonically for the lifetime of the process.
@@ -99,7 +191,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 			acct.Region = accountRegion(sa)
 			acct.Enterprise = isEnterpriseAccount(sa)
 			if fetchCredits {
-				plan, ci, cr, errs := cachedAccountDetails(f.ID, sa, force)
+				plan, ci, cr, errs := cachedAccountDetailsWithCallback(f.ID, sa, force, callbackID)
 				acct.Plan = plan
 				acct.Checkin = ci
 				acct.Credits = cr
@@ -131,10 +223,11 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 	// After refresh (force), run lifecycle so exhaust→disable/delete is immediate.
 	var life []map[string]any
 	if force && lifecycleEnabled() {
-		life = reconcileAllAccounts(true)
+		life = reconcileAllAccountsWithCallback(true, callbackID)
 		// Drop accounts deleted during reconcile (Global exhaust) and refresh
 		// disabled/exhausted from disk/cache (host list may lag after save).
-		if files2, err2 := hostAuthList(); err2 == nil {
+		if files2, err2 := panelHostAuthList(); err2 == nil {
+			statusFiles = files2
 			live := make(map[string]struct{}, len(files2))
 			disabledBy := make(map[string]bool, len(files2))
 			for _, f := range files2 {
@@ -190,6 +283,7 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		"schedule":       []string{"09:00", "21:00"},
 		"server_time":    time.Now().Format("2006-01-02 15:04:05"),
 		"summary":        sum,
+		"model_status":   buildModelStatus(statusFiles),
 	}
 	if len(life) > 0 {
 		resp["lifecycle"] = life
@@ -253,6 +347,45 @@ func summarizeCredits(accounts []wbAccount) map[string]any {
 	}
 }
 
+const egressIPURL = "https://api.ipify.org?format=json"
+
+func fetchEgressIP() (string, error) {
+	return fetchEgressIPWithCallback("")
+}
+
+func fetchEgressIPWithCallback(callbackID string) (string, error) {
+	state := currentProxyState()
+	if runtime.GOOS == "windows" && state.mode == proxyModeInherit {
+		return "", fmt.Errorf("egress IP unavailable for inherited Windows routing")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, egressIPURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := hostHTTPDoWithStateAndCallback(state, req, callbackID)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("egress IP service returned HTTP %d", resp.StatusCode)
+	}
+	var payload struct {
+		IP string `json:"ip"`
+	}
+	if err := json.Unmarshal(resp.Body, &payload); err != nil {
+		return "", fmt.Errorf("decode egress IP: %w", err)
+	}
+	parsed := net.ParseIP(strings.TrimSpace(payload.IP))
+	if parsed == nil {
+		return "", fmt.Errorf("egress IP service returned an invalid address")
+	}
+	return parsed.String(), nil
+}
+
 // Web panel (self-contained HTML, no external assets)
 // -----------------------------------------------------------------------------
 
@@ -260,7 +393,8 @@ func servePanel(sub string) []byte {
 	if sub != "" && sub != "/" && sub != "/panel" && sub != "/panel.html" {
 		return []byte("<h1>404</h1>")
 	}
-	return panelHTML
+	base, _ := json.Marshal(loadedManagementBasePath())
+	return bytes.ReplaceAll(panelHTML, []byte("__WB_MANAGEMENT_BASE_PATH_JSON__"), base)
 }
 
 //go:embed panel.html

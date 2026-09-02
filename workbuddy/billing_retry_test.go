@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -70,7 +71,58 @@ func TestBillingCall_NoRetryOn4xx(t *testing.T) {
 	}
 }
 
-// TestIsTransientBillingErr covers classification boundaries.
+func TestFetchUserResourcePaginatesAllPackages(t *testing.T) {
+	var pages []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			PageNumber int `json:"PageNumber"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		pages = append(pages, req.PageNumber)
+		count := 1
+		if req.PageNumber == 1 {
+			count = 100
+		}
+		accounts := make([]resourcePackage, count)
+		for i := range accounts {
+			accounts[i] = resourcePackage{
+				PackageName:         "page-package",
+				CycleCapacityRemain: 1,
+				CycleCapacitySize:   2,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 0,
+			"data": map[string]any{
+				"Response": map[string]any{
+					"Data": map[string]any{
+						"TotalCount": 101,
+						"Accounts":   accounts,
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	restore := setBillingBase(srv.URL)
+	defer restore()
+
+	cr, err := fetchUserResource(&storedAuth{})
+	if err != nil {
+		t.Fatalf("fetchUserResource: %v", err)
+	}
+	if cr.PackCount != 101 {
+		t.Fatalf("pack count=%d, want 101", cr.PackCount)
+	}
+	if len(pages) != 2 || pages[0] != 1 || pages[1] != 2 {
+		t.Fatalf("requested pages=%v, want [1 2]", pages)
+	}
+}
+
 func TestIsTransientBillingErr(t *testing.T) {
 	tests := []struct {
 		err  error

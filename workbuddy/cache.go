@@ -43,6 +43,10 @@ type accountDetailCall struct {
 // failure the previous cached value is kept (stale-while-error) so a
 // transient upstream 500 does not blank the panel row.
 func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan string, ci *checkinSummary, cr *creditsSummary, errs []string) {
+	return cachedAccountDetailsWithCallback(authID, sa, force, "")
+}
+
+func cachedAccountDetailsWithCallback(authID string, sa *storedAuth, force bool, callbackID string) (plan string, ci *checkinSummary, cr *creditsSummary, errs []string) {
 	var prev *accountCacheEntry
 	if v, ok := accountCache.Load(authID); ok {
 		prev = v.(*accountCacheEntry)
@@ -95,10 +99,10 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 		errMu.Unlock()
 	}
 	wg.Add(3)
-	go func() { defer wg.Done(); plan = fetchPaymentType(sa) }()
+	go func() { defer wg.Done(); plan = fetchPaymentTypeWithCallback(sa, callbackID) }()
 	go func() {
 		defer wg.Done()
-		if c, err := fetchCheckinStatus(sa); err == nil {
+		if c, err := fetchCheckinStatusWithCallback(sa, callbackID); err == nil {
 			ci = c
 		} else {
 			addErr("checkin: " + err.Error())
@@ -106,7 +110,7 @@ func cachedAccountDetails(authID string, sa *storedAuth, force bool) (plan strin
 	}()
 	go func() {
 		defer wg.Done()
-		if r, err := fetchUserResource(sa); err == nil {
+		if r, err := fetchUserResourceWithCallback(sa, callbackID); err == nil {
 			cr = r
 		} else {
 			addErr("credits: " + err.Error())

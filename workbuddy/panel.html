@@ -46,6 +46,9 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 -apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
 .wrap{max-width:1100px;margin:0 auto;padding:24px 16px}
 h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:20px}
+.model-status{margin-bottom:16px;padding:10px 12px;border:1px solid var(--mut-border);border-radius:10px;background:var(--mut-soft);color:var(--fg)}
+.model-status.loading,.model-status.not_started,.model-status.stale{background:var(--warn-soft);border-color:var(--warn-border);color:var(--warn)}
+.model-status.failed{background:var(--err-soft);border-color:var(--err-border);color:var(--err)}
 .bar{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
 button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
 button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
@@ -107,6 +110,8 @@ button.done:disabled{opacity:1}
 @keyframes sp{to{transform:rotate(360deg)}}
 button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .loading{color:var(--mut);text-align:center;padding:40px}
+.footer{margin-top:18px;text-align:center;color:var(--mut);font-size:12px}
+.footer strong{color:var(--fg);font-weight:600}
 .modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
 .modal-mask.show{display:flex}
 .modal{background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(560px,100%);max-height:min(90vh,640px);display:flex;flex-direction:column;box-shadow:var(--modal-shadow)}
@@ -173,6 +178,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <div class="wrap">
   <h1>WorkBuddy 账号面板</h1>
   <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 专家包一次性手动领取 · 耗尽自动关/删</div>
+  <div id="modelStatus" class="model-status" role="status" aria-live="polite" aria-atomic="true" hidden></div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
     <div style="display:flex;gap:8px">
@@ -182,6 +188,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="bar">
     <button class="sec" id="importBtn" onclick="openImportModal()">导入凭证</button>
+    <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
     <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
@@ -193,9 +200,12 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" data-region="cn" onclick="filterRegion('cn',this)">CN <span class="cnt" id="cntCn">0</span></button>
     <button type="button" class="ftag" data-region="global" onclick="filterRegion('global',this)">Global <span class="cnt" id="cntGlobal">0</span></button>
     <button type="button" class="ftag" data-region="exhausted" onclick="filterRegion('exhausted',this)">耗尽 <span class="cnt" id="cntExhausted">0</span></button>
+    <input id="accountSearch" class="field-input" type="search" placeholder="搜索昵称、标签、文件名或 UID" oninput="setAccountSearch(this.value)" aria-label="搜索账号">
+    <button type="button" class="ftag" id="remainSort" onclick="cycleRemainSort(this)">剩余积分：原始顺序</button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <footer class="footer">当前出口 IP：<strong id="egressIp" role="status">检测中…</strong></footer>
 </div>
 <div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
@@ -206,6 +216,8 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <div class="modal-bd">
       <p class="hint">支持 nested <code>{"auth":{...},"account":{...}}</code> 或 flat <code>{"accessToken":...}</code>。落盘为 <code>workbuddy-&lt;uid&gt;.json</code>。</p>
       <textarea id="importRaw" rows="8" placeholder='粘贴 WorkBuddy / CodeBuddy 凭证 JSON'></textarea>
+      <label class="hint" for="importFiles">或选择 JSON 文件，每个最多 2 MiB</label>
+      <input id="importFiles" type="file" multiple accept=".json,application/json">
     </div>
     <div class="modal-ft">
       <button type="button" class="sec" onclick="closeImportModal()">取消</button>
@@ -213,20 +225,46 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     </div>
   </div>
 </div>
+<div class="modal-mask" id="desensitizeModal" onclick="onDesensitizeMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="desensitizeModalTitle">
+    <div class="modal-hd">
+      <h2 id="desensitizeModalTitle">屏蔽词设置</h2>
+      <button type="button" class="modal-x" onclick="closeDesensitizeModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <label class="toggle"><input type="checkbox" id="desensitizeEnabled"> 启用屏蔽词混淆</label>
+      <p class="hint">当前词表：<span id="desensitizeSource"></span>。每行一个词，留空保存为空词表。</p>
+      <label class="hint" for="desensitizeTerms">词表</label>
+      <textarea id="desensitizeTerms" rows="10" placeholder="每行一个词"></textarea>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="restoreDesensitizeTerms(this)">恢复默认词表</button>
+      <button type="button" class="sec" onclick="restoreAllDesensitizeDefaults(this)">恢复全部默认</button>
+      <button type="button" class="sec" onclick="closeDesensitizeModal()">取消</button>
+      <button type="button" onclick="saveDesensitize(this)">保存</button>
+    </div>
+  </div>
+</div>
 <div class="toasts" id="toasts"></div>
 <script>
-const API = "/v0/management/plugins/workbuddy";
+const MANAGEMENT_BASE_PATH=__WB_MANAGEMENT_BASE_PATH_JSON__;
+const API=MANAGEMENT_BASE_PATH+"/plugins/workbuddy";
 
-/* ---------- management key acquisition (3 fallbacks, zero config) ----------
-   1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
+/* ---------- management key acquisition (one-shot query override, then 2 fallbacks) ----------
+   1) ?key= URL param (cleaned from history, kept in sessionStorage).
+   2) sessionStorage (manual input or captured query, never persisted).
+   3) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
       iframe embed) — same approach as cpa-plugin-key-policy.
-   2) ?key= URL param (cleaned from history after read, kept in sessionStorage).
-   3) Manual input (sessionStorage only, never persisted).
 */
 const ENC_PREFIX = "enc::v1::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const PANEL_STORE = "cli-proxy-auth";
 const SS_KEY = "workbuddy-mgmt-key";
+let sessionKeySuppressed=false;
+
+function readSessionKey(){if(sessionKeySuppressed)return null;try{return sessionStorage.getItem(SS_KEY)}catch(_){return null}}
+function storeSessionKey(key){try{sessionStorage.setItem(SS_KEY,key);sessionKeySuppressed=false;return true}catch(_){return false}}
+function clearSessionKey(){sessionKeySuppressed=true;try{sessionStorage.removeItem(SS_KEY)}catch(_){}}
 
 function _enc(t){return new TextEncoder().encode(t)}
 function _dec(b){return new TextDecoder().decode(b)}
@@ -247,23 +285,40 @@ function readPanelKey(){
     return typeof st.managementKey==="string"&&st.managementKey?st.managementKey:null;
   }catch(e){return null}
 }
-function readUrlKey(){
-  const m=new URLSearchParams(window.location.search).get("key");
-  if(m){history.replaceState(null,"",window.location.pathname)}
-  return m;
+function captureUrlKey(){
+  const url=new URL(window.location.href);
+  const key=url.searchParams.get("key");
+  if(!key) return;
+  try{if(!storeSessionKey(key))clearSessionKey()}finally{
+    url.searchParams.delete("key");
+    history.replaceState(null,"",url.pathname+url.search+url.hash);
+  }
 }
+captureUrlKey();
 function getKey(){
-  return sessionStorage.getItem(SS_KEY)||readPanelKey()||readUrlKey();
+  if(sessionKeySuppressed)return null;
+  return readSessionKey()||readPanelKey();
 }
-function saveKey(){
+async function saveKey(){
   const v=document.getElementById("keyInput").value.trim();
   if(!v)return;
-  sessionStorage.setItem(SS_KEY,v);
+  if(!storeSessionKey(v)){showAuth();return}
   document.getElementById("authBox").style.display="none";
-  load(false);
+  if(await load(false)) loadEgressIP();
 }
 function showAuth(){document.getElementById("authBox").style.display="block";const i=document.getElementById("keyInput");i&&i.focus()}
 function authHeaders(k){return k?{"Authorization":"Bearer "+k}:{}}
+async function loadEgressIP(){
+  const el=document.getElementById("egressIp");
+  if(!el||!getKey())return;
+  el.textContent="检测中…";
+  try{
+    const d=await api("/egress-ip");
+    el.textContent=d&&d.ip?d.ip:"不可用";
+  }catch(_){
+    el.textContent="不可用";
+  }
+}
 /* --------------------------------------------------------------------------- */
 
 function toast(title, kind="ok", detail=""){
@@ -372,6 +427,8 @@ function card(a){
   </div>`;
 }
 let currentFilter="all";
+let accountSearch="";
+let sortDirection="original";
 let lastAccounts=[];
 let activeAuthId="";
 let authFailCount=0;
@@ -412,22 +469,18 @@ function lazyLoadCredits(accounts){
       });
   });
 }
-function updateOneCard(a){
-  const el=document.querySelector(`#grid .card[data-auth="${CSS.escape(a.auth_index)}"]`);
-  if(!el) return;
-  // Build new card HTML and replace.
-  const tmp=document.createElement('div');
-  tmp.innerHTML=card(a);
-  if(tmp.firstChild){
-    const newCard=tmp.firstChild;
-    el.replaceWith(newCard);
-    bindCardActions(newCard);
-  }
-  filterRegion(currentFilter, null);
+function renderAccountCards(){
+  const g=document.getElementById("grid");
+  if(!g) return;
+  g.innerHTML=accountsForView(lastAccounts).map(card).join("");
+  bindCardActions(g);
+}
+function updateOneCard(){
+  renderAccountCards();
+  renderSummary(lastAccounts);
   // Update summary + re-check selection when all done.
   const all=lastAccounts||[];
   if(all.every(x=>x.credits||x.error||x.disabled)){
-    renderSummary(all);
     // After all lazy credits loaded, the backend cache now has fresh exhausted
     // flags. Re-fetch /accounts (light, cache-only) so ensureDefaultActiveAuth
     // can pick the correct card — first load may have selected an account that
@@ -444,12 +497,8 @@ function updateOneCard(a){
           all[idx].exhausted=!!fa.exhausted;
         }
       });
-      const g=document.getElementById("grid");
-      if(g){
-        g.innerHTML=accountsForFilter(all).map(card).join("");
-        bindCardActions(g);
-      }
-      filterRegion(currentFilter, null);
+      renderAccountCards();
+      renderSummary(all);
     }).catch(()=>{});
   }
 }
@@ -462,14 +511,7 @@ function filterRegion(region, btn){
       if(b.dataset.region===currentFilter) b.classList.add("active");
     });
   }
-  document.querySelectorAll("#grid .card").forEach(c=>{
-    const r=c.dataset.region||"cn";
-    let show=true;
-    if(currentFilter==="all") show=true;
-    else if(currentFilter==="exhausted") show=c.querySelector(".badge.exhausted")!=null;
-    else show=r===currentFilter;
-    c.style.display=show?"":"none";
-  });
+  renderAccountCards();
   renderSummary(lastAccounts);
 }
 function updateFilterCounts(accounts){
@@ -495,15 +537,36 @@ function accountsForFilter(accounts){
   }
   return list.filter(a=>(a.region||"cn")===currentFilter);
 }
+function accountsForView(accounts){
+  const query=accountSearch.trim().toLowerCase();
+  const view=accountsForFilter(accounts).filter(a=>!query||[a.nickname,a.label,a.name,a.uid].some(v=>String(v||"").toLowerCase().includes(query)));
+  if(sortDirection==="original") return view.slice();
+  return view.slice().sort((a,b)=>{
+    const left=creditOf(a),right=creditOf(b);
+    if(left.known!==right.known) return left.known?-1:1;
+    if(!left.known) return 0;
+    const diff=left.remain-right.remain;
+    return sortDirection==="desc"?-diff:diff;
+  });
+}
+function setAccountSearch(value){
+  accountSearch=value||"";
+  renderAccountCards();
+}
+function cycleRemainSort(btn){
+  sortDirection=sortDirection==="original"?"desc":(sortDirection==="desc"?"asc":"original");
+  btn.textContent="剩余积分："+(sortDirection==="desc"?"降序":(sortDirection==="asc"?"升序":"原始顺序"));
+  renderAccountCards();
+}
 function creditOf(a){
   const cr=a&&a.credits;
-  if(!cr) return {remain:0, used:0, size:0, known:false};
-  const remain=Number(cr.total_remain)||0;
-  const used=Number(cr.total_used)||0;
-  const size=Number(cr.total_size)||0;
-  // known if we have any usage signal, size, or packages
-  const known=remain>0||used>0||size>0||(Array.isArray(cr.packages)&&cr.packages.length>0);
-  return {remain, used, size, known};
+  if(!cr) return {remain:0,used:0,size:0,known:false};
+  return {
+    remain:Number(cr.total_remain)||0,
+    used:Number(cr.total_used)||0,
+    size:Number(cr.total_size)||0,
+    known:true
+  };
 }
 function renderSummary(accounts){
   const box=document.getElementById("summaryBox");
@@ -519,17 +582,32 @@ function renderSummary(accounts){
   let cnRemain=0, cnUsed=0, glRemain=0, glUsed=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    if(c.known){ remain+=c.remain; used+=c.used; size+=c.size; knownN++; }
+    const spendable=!a.disabled&&!a.exhausted;
+    if(c.known){
+      if(spendable) remain+=c.remain;
+      used+=c.used;
+      size+=c.size;
+      knownN++;
+    }
     if(a.disabled) disabledN++;
     if(a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0))) exhaustedN++;
   });
   let allRemain=0, allUsed=0, allSize=0;
   all.forEach(a=>{
     const c=creditOf(a);
-    if(!c.known) return;
-    allRemain+=c.remain; allUsed+=c.used; allSize+=c.size;
-    if((a.region||"cn")==="global"){ glRemain+=c.remain; glUsed+=c.used; }
-    else { cnRemain+=c.remain; cnUsed+=c.used; }
+    const spendable=!a.disabled&&!a.exhausted;
+    if(c.known){
+      if(spendable) allRemain+=c.remain;
+      allUsed+=c.used;
+      allSize+=c.size;
+      if((a.region||"cn")==="global"){
+        if(spendable) glRemain+=c.remain;
+        glUsed+=c.used;
+      }else{
+        if(spendable) cnRemain+=c.remain;
+        cnUsed+=c.used;
+      }
+    }
   });
   const total=size>0?size:(remain+used);
   const pct=total>0?Math.round(used/total*100):0;
@@ -560,6 +638,58 @@ function renderSummary(accounts){
     `}
   `;
 }
+function panelContentType(response){
+  const raw=response.headers&&response.headers.get?response.headers.get("content-type")||"":"";
+  return (raw.split(";",1)[0].trim().toLowerCase()||"unknown");
+}
+function panelHTTPError(kind,response){
+  return new Error(kind+"（HTTP "+response.status+"，"+panelContentType(response)+"）");
+}
+function sanitizePanelErrors(value){
+  if(Array.isArray(value)) return value.map(sanitizePanelErrors);
+  if(!value||typeof value!=="object") return value;
+  for(const key of Object.keys(value)){
+    if(key==="error"&&value[key]) value[key]="请求失败";
+    else value[key]=sanitizePanelErrors(value[key]);
+  }
+  return value;
+}
+async function readPanelResponse(response){
+  let text="";
+  try{text=await response.text()}catch(_){throw panelHTTPError("响应读取失败",response)}
+  if(!text) throw panelHTTPError("响应为空",response);
+  const contentType=panelContentType(response);
+  if(contentType!=="application/json"&&!contentType.endsWith("+json")){
+    throw panelHTTPError("响应格式无效",response);
+  }
+  let data;
+  try{data=JSON.parse(text)}catch(_){throw panelHTTPError("响应 JSON 无效",response)}
+  if(!response.ok) throw panelHTTPError("请求失败",response);
+  return sanitizePanelErrors(data);
+}
+function rejectPanelAuth(response){
+  if(response.status!==401&&response.status!==403) return;
+  authFailCount++;
+  clearSessionKey();
+  showAuth();
+  if(authFailCount>=3){
+    authFailUntil=Date.now()+60000;
+    authFailCount=0;
+    throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
+  }
+  throw new Error(response.status===401?"management key 无效或缺失":"禁止访问 (403)");
+}
+async function managementAPI(path, opts={}){
+  const k=getKey();
+  if(!k){showAuth();throw new Error("需要管理密钥")}
+  if(Date.now()<authFailUntil) throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
+  let r;
+  try{r=await fetch(MANAGEMENT_BASE_PATH+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...authHeaders(k)}})}
+  catch(_){throw new Error("网络请求失败")}
+  rejectPanelAuth(r);
+  authFailCount=0;
+  return readPanelResponse(r);
+}
 async function api(path, opts={}){
   const k=getKey();
   if(!k){
@@ -569,49 +699,33 @@ async function api(path, opts={}){
   if(Date.now()<authFailUntil){
     throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
   }
-  const r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
-  if(r.status===401){
-    authFailCount++;
-    sessionStorage.removeItem(SS_KEY);
-    showAuth();
-    if(authFailCount>=3){
-      authFailUntil=Date.now()+60000;
-      authFailCount=0;
-      throw new Error("认证多次失败，请检查管理密钥后 60s 再试");
-    }
-    throw new Error("management key 无效或缺失");
-  }
-  if(r.status===403){
-    authFailCount++;
-    let body="";
-    try{body=await r.text()}catch(_){}
-    if(/IP banned|too many failed/i.test(body)){
-      // Prefer upstream wait window (e.g. "Try again in 27m10s") when present.
-      let waitMs=60000;
-      const m=body.match(/(\d+)\s*m(?:in(?:ute)?s?)?\s*(\d+)\s*s/i)||body.match(/(\d+)\s*m/i);
-      if(m){
-        const mins=parseInt(m[1],10)||0;
-        const secs=m[2]?parseInt(m[2],10):0;
-        waitMs=Math.min(Math.max((mins*60+secs)*1000, 30000), 30*60*1000);
-      }
-      authFailUntil=Date.now()+waitMs;
-      throw new Error(body.trim()||"IP 被封禁，请稍后再试");
-    }
-    if(authFailCount>=3){
-      authFailUntil=Date.now()+60000;
-      authFailCount=0;
-    }
-    throw new Error(body.trim()||"禁止访问 (403)");
-  }
+  let r;
+  try{r=await fetch(API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}})}
+  catch(_){throw new Error("网络请求失败")}
+  rejectPanelAuth(r);
   authFailCount=0;
-  return r.json();
+  return readPanelResponse(r);
+}
+function updateModelStatus(status){
+  const el=document.getElementById("modelStatus");
+  const state=status&&status.state?status.state:"not_started";
+  if(state==="ready"){
+    el.hidden=true;
+    el.className="model-status";
+    el.textContent="";
+    return;
+  }
+  el.hidden=false;
+  el.className="model-status "+state;
+  el.textContent=(status&&status.message)||"模型目录尚未初始化";
 }
 async function load(force, btn){
+  const manualRefresh=!!btn;
   const g=document.getElementById("grid");
   if(!getKey()){
     showAuth();
     g.innerHTML='<div class="loading">请先填写 management key</div>';
-    return;
+    return false;
   }
   // 刷新按钮：loading 态 + 右上角 toast。原先 force 路径静默调 /refresh，
   // 成功/失败都无反馈（签到按钮有 toast，刷新没有）。
@@ -625,12 +739,14 @@ async function load(force, btn){
     const d = force
       ? await api("/refresh", {method:"POST"})
       : await api("/accounts");
+    updateModelStatus(d.model_status);
+    if(force&&manualRefresh) loadEgressIP();
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
-      g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
-      if(force) toast("刷新失败", "err", d.error);
-      return;
+      g.innerHTML='<div class="loading">请求失败</div>';
+      if(force) toast("刷新失败", "err", "请求失败");
+      return true;
     }
     const accounts=d.accounts||[];
     lastAccounts=accounts;
@@ -640,10 +756,8 @@ async function load(force, btn){
       g.innerHTML='<div class="loading">暂无 WorkBuddy 账号</div>';
       renderSummary([]);
       if(force) toast("数据已刷新", "warn", "暂无 WorkBuddy 账号");
-      return;
+      return true;
     }
-    g.innerHTML=accounts.map(card).join("");
-    bindCardActions(g);
     filterRegion(currentFilter, null);
     renderSummary(accounts);
     // Lazy-load credits for cards that don't have them yet.
@@ -657,12 +771,14 @@ async function load(force, btn){
       if(errN) toast("数据已刷新", "warn", extra);
       else toast("数据已刷新", "ok", extra);
     }
+    return true;
   }catch(e){
     if(force) toast("刷新失败", "err", e.message||String(e));
     // 强制刷新失败时保留旧卡片，只 toast；首次加载仍写错误到 grid。
     if(!force || !g.querySelector(".card")){
       g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
     }
+    return false;
   }finally{
     if(force) busy(btn, false);
   }
@@ -730,11 +846,6 @@ async function selectAuth(idx, btn){
     toast("已选用","ok",who+" · "+region);
     // Re-render from local state for instant feedback, then soft reload
     (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_id===activeAuthId);});
-    const g=document.getElementById("grid");
-    if(g){
-      g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");
-      bindCardActions(g);
-    }
     filterRegion(currentFilter, null);
   }catch(e){
     toast("选用失败","err",e.message||String(e));
@@ -851,6 +962,69 @@ async function claimTrialAll(btn){
 async function toggleAuto(on){
   try{const d=await api("/checkin/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:on})});toast("自动签到已"+(d.checkin_auto?"开启 ✅":"关闭 ⏸"),"ok")}catch(e){toast("设置失败","err",e.message)}
 }
+function renderDesensitizeSettings(d){
+  document.getElementById("desensitizeEnabled").checked=!!d.enabled;
+  document.getElementById("desensitizeTerms").value=(d.terms||[]).join("\n");
+  document.getElementById("desensitizeSource").textContent=d.source==="custom"?"自定义词表":"内置默认词表";
+}
+async function loadDesensitizeSettings(){
+  renderDesensitizeSettings(await api("/desensitize"));
+}
+function sameDesensitizeTerms(left,right){
+  return Array.isArray(left)&&left.length===right.length&&left.every((term,i)=>term===right[i]);
+}
+async function waitForDesensitizeSettings(matches){
+  for(let attempt=0;attempt<20;attempt++){
+    const d=await api("/desensitize");
+    if(matches(d)){
+      renderDesensitizeSettings(d);
+      return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  throw new Error("设置已写入，但运行时未应用");
+}
+async function openDesensitizeModal(){
+  try{
+    await loadDesensitizeSettings();
+    document.getElementById("desensitizeModal").classList.add("show");
+  }catch(e){toast("读取屏蔽词设置失败","err",e.message||String(e))}
+}
+function closeDesensitizeModal(){
+  document.getElementById("desensitizeModal").classList.remove("show");
+}
+function onDesensitizeMaskClick(e){
+  if(e.target===document.getElementById("desensitizeModal")) closeDesensitizeModal();
+}
+async function saveDesensitize(btn){
+  const terms=[...new Set(document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
+  const enabled=document.getElementById("desensitizeEnabled").checked;
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:enabled,desensitize_terms:terms})});
+    await waitForDesensitizeSettings(d=>d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms));
+    toast("屏蔽词设置已保存","ok");
+  }catch(e){toast("保存屏蔽词设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreDesensitizeTerms(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize_terms:null})});
+    await waitForDesensitizeSettings(d=>d.source==="default");
+    toast("已恢复默认词表","ok");
+  }catch(e){toast("恢复默认词表失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreAllDesensitizeDefaults(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/workbuddy/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:false,desensitize_terms:null})});
+    await waitForDesensitizeSettings(d=>!d.enabled&&d.source==="default");
+    toast("已恢复全部默认设置","ok");
+  }catch(e){toast("恢复全部默认设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
 function openImportModal(){
   const m=document.getElementById("importModal");
   m.classList.add("show");
@@ -863,34 +1037,62 @@ function closeImportModal(){
 function onImportMaskClick(e){
   if(e.target===document.getElementById("importModal")) closeImportModal();
 }
+const MAX_IMPORT_FILE_BYTES=2*1024*1024;
+function safeImportName(name){
+  return String(name||"文件").replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,120)||"文件";
+}
+async function importOneCredential(raw){
+  let payload={raw};
+  try{payload={json:JSON.parse(raw)}}catch(_){}
+  return api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+}
 async function importAuth(btn){
+  const imports=[];
   const raw=(document.getElementById("importRaw").value||"").trim();
-  if(!raw){toast("请粘贴凭证 JSON","warn");return}
+  const files=document.getElementById("importFiles");
+  if(raw) imports.push({name:"粘贴内容",raw});
+  for(const file of Array.from(files.files||[])){
+    const name=safeImportName(file.name);
+    if(file.size>MAX_IMPORT_FILE_BYTES){imports.push({name,error:"超过 2 MiB"});continue}
+    try{imports.push({name,raw:await file.text()})}
+    catch(_){imports.push({name,error:"读取失败"})}
+  }
+  if(!imports.length){toast("请选择文件或粘贴凭证 JSON","warn");return}
   busy(btn,true);
   try{
-    let payload={raw};
-    try{payload={json:JSON.parse(raw)}}catch(_){}
-    const d=await api("/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    if(d.success){
-      toast("导入成功","ok",(d.nickname||d.uid||"")+ " → "+(d.file||d.name||""));
-      document.getElementById("importRaw").value="";
-      closeImportModal();
-      load(true);
-    }else toast("导入失败","err",d.error||"unknown");
-  }catch(e){toast("导入请求失败","err",e.message)}
-  busy(btn,false);
+    const results=[];
+    for(const item of imports){
+      if(item.error){results.push({name:item.name,error:item.error});continue}
+      try{
+        const d=await importOneCredential(item.raw);
+        results.push({name:item.name,error:d.success?"":"导入失败"});
+      }catch(_){results.push({name:item.name,error:"请求失败"})}
+    }
+    document.getElementById("importRaw").value="";
+    files.value="";
+    const ok=results.filter(r=>!r.error).length;
+    const fail=results.length-ok;
+    const detail=results.map(r=>r.name+"："+(r.error||"成功")).join("；");
+    toast("导入完成",fail?"warn":"ok",ok+" 成功 / "+fail+" 失败 · "+detail);
+    if(fail===0) closeImportModal();
+    if(ok) await load(true)
+  }finally{busy(btn,false)}
 }
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 document.addEventListener("keydown",e=>{
   if(e.key=="Escape"&&document.getElementById("importModal").classList.contains("show")) closeImportModal();
+  if(e.key=="Escape"&&document.getElementById("desensitizeModal").classList.contains("show")) closeDesensitizeModal();
 });
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__wbThemeSync)window.__wbThemeSync();
-if(getKey()){
-  load(false);
-}else{
-  showAuth();
+async function loadInitial(){
+  if(getKey()){
+    if(await load(false)) loadEgressIP();
+  }else{
+    showAuth();
+  }
 }
+loadInitial();
 </script>
 </body>
 </html>

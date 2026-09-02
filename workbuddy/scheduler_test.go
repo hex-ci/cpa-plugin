@@ -87,6 +87,7 @@ func TestSchedulerPick_OffMode_Defers(t *testing.T) {
 
 func TestSchedulerPick_SingleCandidate_PicksIt(t *testing.T) {
 	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-only": modelReady})
 	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
 		Provider: providerName,
 		Candidates: []pluginapi.SchedulerAuthCandidate{
@@ -107,6 +108,7 @@ func TestSchedulerPick_SingleCandidate_PicksIt(t *testing.T) {
 
 func TestSchedulerPick_PrefersPanelSelection(t *testing.T) {
 	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-a": modelReady, "wb-b": modelReady})
 	accountCache.Store("wb-a", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 10, TotalSize: 10}})
 	accountCache.Store("wb-b", &accountCacheEntry{credits: &creditsSummary{TotalRemain: 500, TotalSize: 500}})
 	defer func() {
@@ -132,6 +134,7 @@ func TestSchedulerPick_PrefersPanelSelection(t *testing.T) {
 
 func TestSchedulerPick_StaysOnExhaustedSelection(t *testing.T) {
 	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-exhausted": modelReady, "wb-ok": modelReady})
 	// When selected is exhausted AND a non-exhausted candidate exists,
 	// it should switch to the non-exhausted one and update activeAuthID.
 	accountCache.Store("wb-exhausted", &accountCacheEntry{
@@ -166,6 +169,7 @@ func TestSchedulerPick_StaysOnExhaustedSelection(t *testing.T) {
 
 func TestSchedulerPick_AllExhausted_KeepsCurrent(t *testing.T) {
 	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-a": modelReady, "wb-b": modelReady})
 	// When ALL candidates are exhausted, keep current selection rather than
 	// flip-flopping between exhausted accounts.
 	accountCache.Store("wb-a", &accountCacheEntry{
@@ -197,6 +201,7 @@ func TestSchedulerPick_AllExhausted_KeepsCurrent(t *testing.T) {
 
 func TestSchedulerPick_SwitchesOnlyWhenSelectionGone(t *testing.T) {
 	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-ok": modelReady})
 	accountCache.Store("wb-ok", &accountCacheEntry{
 		credits: &creditsSummary{TotalRemain: 300, TotalUsed: 0, TotalSize: 300},
 	})
@@ -223,6 +228,7 @@ func TestSchedulerPick_SwitchesOnlyWhenSelectionGone(t *testing.T) {
 
 func TestSchedulerPick_SkipsDisabledCandidates(t *testing.T) {
 	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{"wb-live": modelReady})
 	accountCache.Store("wb-live", &accountCacheEntry{
 		credits: &creditsSummary{TotalRemain: 50, TotalSize: 50},
 	})
@@ -254,6 +260,53 @@ func TestSchedulerPick_SkipsDisabledCandidates(t *testing.T) {
 	resp2 := parsePickResponse(t, raw2)
 	if resp2.Handled {
 		t.Fatalf("all disabled should defer, got %+v", resp2)
+	}
+}
+
+func TestSchedulerPick_FiltersReadiness(t *testing.T) {
+	resetActiveAuth(t)
+	installModelStatesForTest(t, map[string]modelReadinessState{
+		"wb-ready":       modelReady,
+		"wb-stale":       modelStale,
+		"wb-not-started": modelNotStarted,
+		"wb-loading":     modelLoading,
+		"wb-failed":      modelFailed,
+	})
+	candidates := []pluginapi.SchedulerAuthCandidate{
+		{ID: "wb-ready", Provider: providerName},
+		{ID: "wb-stale", Provider: providerName},
+		{ID: "wb-not-started", Provider: providerName},
+		{ID: "wb-loading", Provider: providerName},
+		{ID: "wb-failed", Provider: providerName},
+	}
+	for _, want := range []string{"wb-ready", "wb-stale"} {
+		setActiveAuthID(want)
+		raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+			Provider:   providerName,
+			Candidates: candidates,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := parsePickResponse(t, raw); !got.Handled || got.AuthID != want {
+			t.Fatalf("executable candidate %q was filtered: %+v", want, got)
+		}
+	}
+
+	setActiveAuthID("")
+	raw, err := handleSchedulerPick(mustMarshal(t, pluginapi.SchedulerPickRequest{
+		Provider: providerName,
+		Candidates: []pluginapi.SchedulerAuthCandidate{
+			{ID: "wb-not-started", Provider: providerName},
+			{ID: "wb-loading", Provider: providerName},
+			{ID: "wb-failed", Provider: providerName},
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsePickResponse(t, raw); got.Handled {
+		t.Fatalf("blocked-only candidates should defer: %+v", got)
 	}
 }
 

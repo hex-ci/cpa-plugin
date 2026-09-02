@@ -7,13 +7,14 @@ package main
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
 // forceStreamBody returns the request body with "stream":true set, since the
 // upstream rejects non-streaming chat requests.
 // prepareUpstreamBody composes forceStreamBody + normalizeToolsForUpstream +
-// rewriteSystemForUpstream + ensureSystemMessage + rewriteModelInBody into a
+// rewriteModelInBody + rewriteSystemForUpstream + ensureSystemMessage into a
 // single unmarshal/marshal pass (v0.6.31 perf: was 4-5 full JSON round-trips
 // on every chat completion). The 4 legacy helpers remain for tests and other
 // call sites that need them individually.
@@ -36,14 +37,17 @@ func prepareUpstreamBody(payload, original []byte, sa *storedAuth, upstreamModel
 	// 2. normalizeTools: tool_choice object form → string; "none" suppresses tools.
 	normalizeToolsInPlace(obj)
 
-	// 3. rewriteSystem: strip blocked Claude Code template phrases + force thinking.
+	// 3. rewriteModel: swap client model name to upstream model id.
+	rewriteModelInPlace(obj, upstreamModel)
+
+	// 4. system sanitization: strip blocked Claude Code template phrases.
 	rewriteSystemInPlace(obj)
 
-	// 4. ensureSystemMessage: inject minimal system msg for Global only.
-	ensureSystemMessageInPlace(obj, sa)
+	// 5. desensitize the configured prompt and tool metadata fields.
+	applyDesensitizeInPlace(obj, currentFeatureRuntime())
 
-	// 5. rewriteModel: swap client model name to upstream model id.
-	rewriteModelInPlace(obj, upstreamModel)
+	// 6. ensureSystemMessage: inject minimal system msg for Global only.
+	ensureSystemMessageInPlace(obj, sa)
 
 	out, err := json.Marshal(obj)
 	if err != nil {
@@ -125,9 +129,6 @@ func rewriteSystemInPlace(obj map[string]any) bool {
 			changed = true
 		}
 	}
-	if forceMaxThinking(obj) {
-		changed = true
-	}
 	return changed
 }
 
@@ -159,15 +160,14 @@ func ensureSystemMessageInPlace(obj map[string]any, sa *storedAuth) bool {
 }
 
 // rewriteModelInPlace swaps obj["model"] to upstreamModel when non-empty.
-// Mirrors rewriteModelInBody's behavior (case-insensitive compare); returns
-// true when modified.
+// Returns true when modified.
 func rewriteModelInPlace(obj map[string]any, upstreamModel string) bool {
 	upstreamModel = strings.TrimSpace(upstreamModel)
 	if upstreamModel == "" {
 		return false
 	}
 	cur, _ := obj["model"].(string)
-	if strings.EqualFold(strings.TrimSpace(cur), upstreamModel) {
+	if cur == upstreamModel {
 		return false
 	}
 	obj["model"] = upstreamModel
@@ -307,9 +307,6 @@ func rewriteSystemForUpstream(payload []byte) []byte {
 			changed = true
 		}
 	}
-	if forceMaxThinking(obj) {
-		changed = true
-	}
 	if !changed {
 		return payload
 	}
@@ -391,30 +388,45 @@ func rewriteContentField(msg map[string]any) bool {
 	return false
 }
 
+var sanitizeFeatures = []string{
+	"x-anthropic-billing-header",
+	"You are Claude Code",
+	"Main branch (",
+}
+
+var sanitizeBillingHeaderRE = regexp.MustCompile(`(?i)x-anthropic-billing-header:[^;\n]*;?\s*`)
+var sanitizeCCEntrypointRE = regexp.MustCompile(`(?i)\bcc_entrypoint=`)
+var sanitizeCCKeyValueRE = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\n]*;?\s*`)
+
 func sanitizeBlockedTemplates(s string) string {
+	if !hasFingerprint(s) {
+		return s
+	}
+	original := s
 	s = strings.ReplaceAll(s,
 		"You are Claude Code, Anthropic's official CLI for Claude.",
 		"You are Claude Code, Anthropic's official CLI tool for Claude.")
 	s = strings.ReplaceAll(s,
 		"Main branch (you will usually use this for PRs)",
 		"Default branch (you will usually use this for PRs)")
-	return s
+	s = sanitizeBillingHeaderRE.ReplaceAllString(s, "")
+	s = sanitizeCCKeyValueRE.ReplaceAllString(s, "")
+	if s == original {
+		return original
+	}
+	return strings.TrimSpace(s)
 }
 
-// forceMaxThinking pins reasoning_effort to "high" for hy3-family models so
-// Tencent Hunyuan 3 always reasons at maximum depth. CodeBuddy only honors
-// "high" for deep thinking (medium/low/max/xhigh/ultra all fall back to no
-// reasoning), so we override whatever the client sent. Returns true if changed.
-func forceMaxThinking(obj map[string]any) bool {
-	model, _ := obj["model"].(string)
-	if !strings.HasPrefix(model, "hy3") {
-		return false
+func hasFingerprint(s string) bool {
+	if sanitizeCCEntrypointRE.MatchString(s) {
+		return true
 	}
-	if eff, _ := obj["reasoning_effort"].(string); eff == "high" {
-		return false
+	for _, feature := range sanitizeFeatures {
+		if strings.Contains(s, feature) {
+			return true
+		}
 	}
-	obj["reasoning_effort"] = "high"
-	return true
+	return sanitizeBillingHeaderRE.MatchString(s)
 }
 
 // rewriteModelInBody replaces the "model" field of a chat-completions body

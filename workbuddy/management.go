@@ -15,6 +15,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+type managementRequestWire struct {
+	pluginapi.ManagementRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 // billingBase hosts the Buddy-gas-station check-in and resource-package APIs.
 // It is a var (not const) so tests can override it with an httptest server.
 var billingBase = "https://www.codebuddy.cn"
@@ -121,6 +126,8 @@ type managementRegistrationResponse struct {
 var (
 	managementBasePathCache   = "/v0/management"
 	managementBasePathCacheMu sync.RWMutex
+	resourceBasePathCache     = "/v0/resource/plugins/" + providerName
+	resourceBasePathCacheMu   sync.RWMutex
 )
 
 func loadedManagementBasePath() string {
@@ -139,11 +146,29 @@ func setManagementBasePath(p string) {
 	managementBasePathCacheMu.Unlock()
 }
 
+func loadedResourceBasePath() string {
+	resourceBasePathCacheMu.RLock()
+	defer resourceBasePathCacheMu.RUnlock()
+	return resourceBasePathCache
+}
+
+func setResourceBasePath(p string) {
+	p = strings.TrimRight(strings.TrimSpace(p), "/")
+	if p == "" {
+		return
+	}
+	resourceBasePathCacheMu.Lock()
+	resourceBasePathCache = p
+	resourceBasePathCacheMu.Unlock()
+}
+
 func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
+			{Method: http.MethodGet, Path: base + "/desensitize", Description: "Get effective WorkBuddy desensitize runtime settings."},
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List WorkBuddy accounts with credits, plan and check-in status."},
+			{Method: http.MethodGet, Path: base + "/egress-ip", Description: "Get the current egress IP through the active WorkBuddy HTTP route."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh quota/cache for all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle auto check-in (enabled: true/false)."},
@@ -161,54 +186,70 @@ func managementRegistration() managementRegistrationResponse {
 }
 
 func handleManagement(raw []byte) ([]byte, error) {
-	var req pluginapi.ManagementRequest
+	var req managementRequestWire
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
 	path := strings.TrimRight(req.Path, "/")
 
 	// Browser UI resource routes (unauthenticated).
-	resPrefix := "/v0/resource/plugins/" + providerName
+	resPrefix := loadedResourceBasePath()
 	if req.Method == http.MethodGet && strings.HasPrefix(path, resPrefix) {
 		sub := strings.TrimPrefix(path, resPrefix)
 		return okEnvelope(mgmtHTMLResponse(servePanel(sub)))
 	}
 
-	// Plugin-layer auth + rate limit for mutating endpoints (v0.6.31).
-	// Only enforced when management_key is configured; otherwise host middleware
-	// is the sole guard (historical default).
-	if req.Method == http.MethodPost || mutatingManagementPath(path) {
-		ip := managementClientIP(req)
-		if !allowManagementRequest(ip) {
-			return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
-				"error": "rate limit exceeded, try again later",
-			}))
-		}
-		if status, msg := checkManagementAuth(req); status != 0 {
+	// Plugin-layer auth applies to every management API route when a key is
+	// configured. Static panel resources return above so the login UI remains
+	// reachable; the panel sends the Bearer key on each JSON request.
+	mutating := req.Method == http.MethodPost || mutatingManagementPath(path)
+	if loadedManagementKey() != "" || mutating {
+		if status, msg := checkManagementAuth(req.ManagementRequest); status != 0 {
+			ip := managementClientIP(req.ManagementRequest)
+			if !allowManagementRequest(ip) {
+				return okEnvelope(mgmtJSONResponse(http.StatusTooManyRequests, map[string]any{
+					"error": "rate limit exceeded, try again later",
+				}))
+			}
 			return okEnvelope(mgmtJSONResponse(status, map[string]any{"error": msg}))
 		}
 	}
 
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch {
+	case req.Method == http.MethodGet && path == base+"/desensitize":
+		cfg := currentFeatureRuntime()
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{
+			"enabled": cfg.desensitizeEnabled,
+			"terms":   append([]string(nil), cfg.desensitizeTerms...),
+			"source":  cfg.desensitizeSource,
+		}))
 	case req.Method == http.MethodGet && path == base+"/accounts":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardExWithCallback(false, false, req.HostCallbackID)))
+	case req.Method == http.MethodGet && path == base+"/egress-ip":
+		ip, err := fetchEgressIPWithCallback(req.HostCallbackID)
+		if err != nil {
+			return okEnvelope(mgmtJSONResponse(http.StatusBadGateway, map[string]any{
+				"error": "egress IP unavailable",
+			}))
+		}
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{"ip": ip}))
 	case req.Method == http.MethodPost && path == base+"/refresh":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(true, true)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardExWithCallback(true, true, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/checkin":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckin(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleManualCheckinWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/checkin/config":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req.ManagementRequest)))
 	case req.Method == http.MethodGet && path == base+"/credits":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQuery(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCreditsQueryWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/import":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleImportAuth(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/trial":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrial(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleClaimTrialWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodPost && path == base+"/select":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleSelectAuth(req.ManagementRequest)))
 	case req.Method == http.MethodPost && path == base+"/keepalive":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNow(req)))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveNowWithCallback(req.ManagementRequest, req.HostCallbackID)))
 	case req.Method == http.MethodGet && path == base+"/keepalive/status":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleKeepaliveStatus()))
 	}
@@ -220,10 +261,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 //
 // When management_key is configured (config_yaml or WB_MANAGEMENT_KEY env), all
-// mutating endpoints under /v0/management/plugins/workbuddy/* require a matching
-// Bearer token. Read-only GET endpoints (accounts/credits/panel) pass through so
-// the panel can render before the user has pasted a key — the panel itself
-// supplies the key on every call via Authorization header.
+// management API routes under /v0/management/plugins/workbuddy/* require a
+// matching Bearer token. Static panel resources stay public so the UI can load
+// and prompt for the key; the panel itself supplies the key on every API call.
 //
 // A per-IP token-bucket rate limiter guards against brute-force when the key
 // check fails repeatedly.

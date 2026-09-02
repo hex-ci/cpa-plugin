@@ -72,6 +72,7 @@ var hardCreditMarkers = []string{
 	"余额不足",
 	"积分用完",
 	"额度用尽",
+	"额度已用尽",
 	"没有积分",
 	"credit not enough",
 	"not enough credit",
