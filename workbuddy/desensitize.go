@@ -42,13 +42,14 @@ type desensitizeMatcher struct {
 }
 
 type featureRuntimeConfig struct {
-	desensitizeEnabled bool
-	desensitizeTerms   []string
-	desensitizeSource  string
-	matcher            *desensitizeMatcher
-	oauthClientMode    string
-	enterpriseCredits  bool
-	configuredModels   []string
+	desensitizeEnabled        bool
+	desensitizeTerms          []string
+	desensitizeSource         string
+	matcher                   *desensitizeMatcher
+	oauthClientMode           string
+	enterpriseCredits         bool
+	enterpriseCreditsExplicit bool
+	configuredModels          []string
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -112,13 +113,14 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		return nil, err
 	}
 	return &featureRuntimeConfig{
-		desensitizeEnabled: doc.Desensitize != nil && *doc.Desensitize,
-		desensitizeTerms:   terms,
-		desensitizeSource:  source,
-		matcher:            matcher,
-		oauthClientMode:    mode,
-		enterpriseCredits:  doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
-		configuredModels:   models,
+		desensitizeEnabled:        doc.Desensitize != nil && *doc.Desensitize,
+		desensitizeTerms:          terms,
+		desensitizeSource:         source,
+		matcher:                   matcher,
+		oauthClientMode:           mode,
+		enterpriseCredits:         doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
+		enterpriseCreditsExplicit: doc.EnterpriseCredits != nil,
+		configuredModels:          models,
 	}, nil
 }
 

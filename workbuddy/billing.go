@@ -34,6 +34,13 @@ func isGlobalDomain(domain string) bool {
 	return d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai")
 }
 
+// isEnterpriseAccount: enterprise members are bound to a non-empty
+// enterpriseId at login. They bill through a monthly-resetting usage pool:
+// no check-in, no trial, and lifecycle policies do not apply.
+func isEnterpriseAccount(sa *storedAuth) bool {
+	return sa != nil && strings.TrimSpace(sa.Account.EnterpriseID) != ""
+}
+
 // accountRegion returns "cn" or "global" based on the auth's domain field.
 // Empty domain (legacy auth files) defaults to "cn" for backward compat.
 func accountRegion(sa *storedAuth) string {
@@ -294,7 +301,12 @@ func fetchUserResourceWithCallback(sa *storedAuth, callbackID string) (*creditsS
 	defer release()
 
 	cfg := currentFeatureRuntime()
-	if cfg != nil && cfg.enterpriseCredits && accountRegion(sa) == "cn" {
+	// Enterprise detection. Automatic identification (stored enterpriseId) wins
+	// unless the operator explicitly configured enterprise_credits; then the
+	// config + region gate takes over. Both routes hit the enterprise pool.
+	automatic := isEnterpriseAccount(sa) && (cfg == nil || !cfg.enterpriseCreditsExplicit)
+	configured := cfg != nil && cfg.enterpriseCredits && accountRegion(sa) == "cn"
+	if automatic || configured {
 		credits, err := fetchEnterpriseCreditsCN(sa, callbackID)
 		if err == nil {
 			return credits, nil
@@ -532,6 +544,11 @@ func fetchPaymentType(sa *storedAuth) string {
 }
 
 func fetchPaymentTypeWithCallback(sa *storedAuth, callbackID string) string {
+	// Personal get-payment-type reports "free" for enterprise members; the
+	// stored enterpriseId is the authoritative account-type signal.
+	if isEnterpriseAccount(sa) {
+		return "enterprise"
+	}
 	data, err := billingCallWithCallback(sa, "/v2/billing/meter/get-payment-type", nil, callbackID)
 	if err != nil {
 		return ""

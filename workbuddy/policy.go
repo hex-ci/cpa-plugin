@@ -6,6 +6,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -173,11 +175,52 @@ func displayNote(sa *storedAuth, cr *creditsSummary, disabled bool) string {
 	return note
 }
 
+// displayNameFor: enterprise JWTs carry the real given_name, which beats the
+// masked signup nickname. Personal tokens have no given_name → nickname.
+func displayNameFor(sa *storedAuth) string {
+	if sa == nil {
+		return ""
+	}
+	nick := strings.TrimSpace(sa.Account.Nickname)
+	if !isEnterpriseAccount(sa) {
+		return nick
+	}
+	if gn := jwtGivenName(sa.Auth.AccessToken); gn != "" {
+		return gn
+	}
+	return nick
+}
+
+// jwtGivenName decodes the given_name claim from the access token payload.
+func jwtGivenName(accessToken string) string {
+	parts := strings.Split(accessToken, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload := parts[1]
+	if pad := len(payload) % 4; pad != 0 {
+		payload += strings.Repeat("=", 4-pad)
+	}
+	raw, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		GivenName string `json:"given_name"`
+	}
+	if json.Unmarshal(raw, &claims) != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.GivenName)
+}
+
 // labelForAuth adds [CN]/[Global] for host labels.
 func labelForAuth(sa *storedAuth) string {
 	base := "WorkBuddy"
-	if sa != nil && strings.TrimSpace(sa.Account.Nickname) != "" {
-		base = strings.TrimSpace(sa.Account.Nickname)
+	if sa != nil {
+		if dn := displayNameFor(sa); dn != "" {
+			base = dn
+		}
 	}
 	tag := "CN"
 	if accountRegion(sa) == "global" {

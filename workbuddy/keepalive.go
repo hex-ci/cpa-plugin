@@ -273,7 +273,7 @@ func runTokenKeepaliveWithCallback(callbackID string) *keepaliveSummary {
 			// Cheap pre-read for nickname/region; refreshOneAuth re-reads anyway
 			// but the row should be populated even when refresh errors early.
 			if sa, err := hostAuthGet(f.AuthIndex); err == nil {
-				row.Nickname = sa.Account.Nickname
+				row.Nickname = displayNameFor(sa)
 				row.Region = accountRegion(sa)
 			}
 			status, err := refreshOneAuthWithCallback(f.AuthIndex, f.ID, callbackID)
@@ -334,7 +334,7 @@ func handleKeepaliveNowWithCallback(req pluginapi.ManagementRequest, callbackID 
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	row := keepaliveRow{AuthIndex: authIndex, Nickname: sa.Account.Nickname, Region: accountRegion(sa)}
+	row := keepaliveRow{AuthIndex: authIndex, Nickname: displayNameFor(sa), Region: accountRegion(sa)}
 	row.Status, err = refreshOneAuthWithCallback(authIndex, "", callbackID)
 	if err != nil {
 		row.Detail = truncateRedacted(err.Error(), 200)
