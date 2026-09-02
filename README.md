@@ -1,6 +1,6 @@
 # CPA 插件仓库
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy** 与 **QoderWork (CN)** 两个 OAuth Provider。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**QoderWork (CN)** 与 **QwenWork (CN)** 三个 OAuth Provider。
 
 ## 插件
 
@@ -8,6 +8,7 @@
 |---|---|---|
 | `workbuddy` | Tencent CodeBuddy OAuth、动态模型、executor、CN 每日签到、Global 专家包、积分面板、可选积分调度 | [workbuddy/](workbuddy/) |
 | `qoderwork` | QoderWork CN（qoder.com.cn）：OAuth 设备授权 + PAT 双登录（可共存）、COSY 签名推理、动态模型、每日签到、积分面板、token 保活 | [qoderwork/](qoderwork/) |
+| `qwenwork` | QwenWork CN（gateway.qwenwork.cn）：OAuth 设备授权登录、COSY 签名推理、动态模型、积分/套餐面板、token 保活（无签到/无 PAT） | [qwenwork/](qwenwork/) |
 
 ## 多架构 Release
 
@@ -49,6 +50,8 @@ plugins:
       enabled: true
     qoderwork:
       enabled: true
+    qwenwork:
+      enabled: true
 ```
 
 ## 远程更新（插件商店自定义源）
@@ -59,4 +62,4 @@ CPA 插件商店源添加：
 https://raw.githubusercontent.com/Sliverkiss/cpa-plugin/main/registry.json
 ```
 
-然后在商店 UI 安装/更新 **workbuddy** 和 **qoderwork**。
+然后在商店 UI 安装/更新 **workbuddy**、**qoderwork** 和 **qwenwork**。

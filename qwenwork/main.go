@@ -77,7 +77,7 @@ import (
 const (
 	providerName  = "qwenwork"
 	authFileName  = "qwenwork.json"
-	pluginLogoURL = "https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/QwenWork.png"
+	pluginLogoURL = "https://img.alicdn.com/imgextra/i2/O1CN01j5Zn121gj7WSX4g7x_!!6000000004177-55-tps-540-120.svg"
 	// QwenWork (千问办公) 单网关 gateway.qwenwork.cn，同时承载鉴权/账单/COSY 推理。
 	// 与 qoderwork 同属阿里 Qoder 底层：RSA 公钥相同、COSY 签名同构、deviceFlow 同构。
 	// 差异：单域名、明文 JSON body（无 Encode=1）、cosyVersion 1.1.18、无 PAT/jobToken 路径。
