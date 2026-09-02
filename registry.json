@@ -42,7 +42,7 @@
       "name": "QwenWork",
       "description": "QwenWork CN (gateway.qwenwork.cn) provider for CLIProxyAPI: OAuth device authorization (PKCE), COSY-signed chat executor, dynamic model list, credits/plan panel via account-context, token keepalive (deviceToken).",
       "author": "Sliverkiss",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "repository": "https://github.com/Sliverkiss/cpa-plugin",
       "logo": "https://img.alicdn.com/imgextra/i2/O1CN01j5Zn121gj7WSX4g7x_!!6000000004177-55-tps-540-120.svg",
       "homepage": "https://github.com/Sliverkiss/cpa-plugin/tree/main/qwenwork",

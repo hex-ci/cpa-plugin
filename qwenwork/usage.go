@@ -202,6 +202,12 @@ func usageDetailFromMap(m map[string]any) usage.Detail {
 		CachedTokens:    num("cached_tokens"),
 		CacheReadTokens: num("cache_read_input_tokens"),
 	}
+	// QwenWork nests cache stats under prompt_tokens_details.cached_tokens.
+	if pd, ok := m["prompt_tokens_details"].(map[string]any); ok && d.CachedTokens == 0 {
+		if v, ok2 := pd["cached_tokens"].(float64); ok2 {
+			d.CachedTokens = int64(v)
+		}
+	}
 	if ct, ok := m["completion_tokens_details"].(map[string]any); ok {
 		if v, ok2 := ct["reasoning_tokens"].(float64); ok2 {
 			d.ReasoningTokens = int64(v)

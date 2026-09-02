@@ -231,6 +231,29 @@ func cleanChunkJSON(s string) string {
 	if json.Unmarshal([]byte(s), &obj) != nil {
 		return s
 	}
+	// QwenWork emits token accounting as a dedicated terminal frame shaped
+	// {"choices":[{"delta":{}}],...,"usage":{...}} with NO finish_reason. The
+	// empty-delta drop below would swallow it, zeroing every streaming usage
+	// record — so keep usage-bearing chunks. We still strip the upstream's
+	// private telemetry siblings (raw_usage / sub_usages) that no OpenAI
+	// client understands and that leak internal routing metadata.
+	usageChanged := false
+	if _, ok := obj["usage"].(map[string]any); ok {
+		for _, noise := range []string{"raw_usage", "sub_usages"} {
+			if _, present := obj[noise]; present {
+				delete(obj, noise)
+				usageChanged = true
+			}
+		}
+		if usageChanged {
+			out, err := json.Marshal(obj)
+			if err != nil {
+				return s
+			}
+			return string(out)
+		}
+		return s
+	}
 	changed := false
 	if choices, ok := obj["choices"].([]any); ok {
 		for _, c := range choices {
