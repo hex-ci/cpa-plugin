@@ -91,6 +91,11 @@ func buildQwenBody(payload map[string]any, modelKey string) ([]byte, error) {
 	if modelKey == "" {
 		modelKey = "pro"
 	}
+	// Desensitize the configured prompt and tool metadata fields before the
+	// OpenAI payload is folded into the qwenwork body (same scope as the
+	// WorkBuddy plugin: system/developer text, marker-flagged user text,
+	// tool title/description only).
+	applyDesensitizeInPlace(payload, currentFeatureRuntime())
 	requestID := uuid.NewString()
 	system, messages, lastUser := splitMessages(payload)
 	if lastUser == "" {

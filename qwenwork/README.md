@@ -11,8 +11,9 @@
 | **登录** | OAuth 设备授权（PKCE），浏览器授权，JWT access + `ory_rt_` refresh token |
 | **COSY 推理** | RSA 包 AES 会话密钥 + MD5 请求签名，对接 gateway.qwenwork.cn SSE 流式 |
 | **动态模型** | 静态回退（pro/flash/qwen3.8-max-preview）+ `/algo/api/v2/model/list` 动态刷新 |
-| **token 保活** | 22:00 定时刷新；`POST /api/v1/deviceToken/refresh`（body `{refresh_token, target:"c"}`） |
+| **token 保活** | 22:00 定时刷新；`POST /api/v1/deviceToken/refresh`（body `{refresh_token}`，**不带 target 参数**——target:"c" 会把企业号身份钉回个人号） |
 | **积分/套餐** | `GET /api/v1/adapter/user/account-context?include=user,plan,quota`（一次拿到 user+plan+quota；企业号有固定额度，个人免费号只有 `remaining`、无固定总额） |
+| **屏蔽词设置** | 面板「屏蔽词设置」弹窗管理：启用开关 + 每行一词的自定义词表；在 system/developer 提示词、带 CLI 上下文标记的 user 消息、工具 title/description 中对命中词插入 U+200B（零宽空格）混淆。默认关闭；未配置词表时使用内置 85 词默认表（与 WorkBuddy 插件同源），`[]` 表示空自定义词表。保存走通用 `PATCH /plugins/qwenwork/config`，经 CPA 重载后实时生效 |
 | **面板** | 积分、套餐、账号管理（`/v0/resource/plugins/qwenwork/panel`） |
 
 ## 登录流程
@@ -43,6 +44,22 @@ plugins:
     qwenwork:
       enabled: true
 ```
+
+## 屏蔽词（desensitize）配置
+
+```yaml
+plugins:
+  configs:
+    qwenwork:
+      desensitize: true
+      desensitize_terms:      # 省略用内置 85 词默认表；[] 为空词表
+        - Codex
+        - Claude Code
+```
+
+- 生效范围：发往千问办公的 system/developer 提示词、带 `# AGENTS.md instructions` / `<system-reminder>` 等 CLI 上下文标记的 user 消息、以及工具定义的 title/description 字段；普通用户输入和模型输出不受影响。
+- 实现：命中词首字符后插入 U+200B 零宽空格（大小写不敏感、收敛幂等），用于规避上游对客户端指纹词/敏感词的识别。
+- 面板入口：QwenWork 面板 →「屏蔽词设置」（读取 `GET /plugins/qwenwork/desensitize` 生效态，保存后轮询确认运行时已应用）。
 
 ## 端点一览（gateway.qwenwork.cn 单网关）
 

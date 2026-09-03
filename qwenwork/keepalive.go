@@ -64,15 +64,24 @@ func isSessionDeadError(msg string) bool {
 	return false
 }
 
+// refreshBody builds the /api/v1/deviceToken/refresh request body for one rt.
+// Deliberately NO target field: target:"c" pins the refreshed identity to the
+// personal account and silently rewrites enterprise credentials (verified
+// live 2026-09-03: ent rt + target:"c" → personal is_biz=false token).
+func refreshBody(refreshToken string) []byte {
+	body, _ := json.Marshal(map[string]string{"refresh_token": refreshToken})
+	return body
+}
+
 // refreshCall refreshes the token pair for one auth. qwenwork has a single
 // credential family (JWT access + ory_rt_ refresh): POST /api/v1/deviceToken/refresh
-// with the refresh token plus target:"c".
+// with the refresh token.
 //
 // Returns the decoded data + raw body + status (raw needed for error
 // classification — doRawJSON collapses 4xx bodies into a generic error and
 // drops the business code, e.g. TOKEN_EXPIRE).
 func refreshCall(sa *storedAuth) (json.RawMessage, []byte, int, error) {
-	body, _ := json.Marshal(map[string]string{"refresh_token": sa.Auth.RefreshToken, "target": "c"})
+	body := refreshBody(sa.Auth.RefreshToken)
 	data, status, err := doRawJSON(sharedHTTPClient(), http.MethodPost, upstreamBaseCN+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, status, err

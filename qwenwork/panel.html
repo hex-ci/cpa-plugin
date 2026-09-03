@@ -90,6 +90,10 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .pb-track{height:8px;background:var(--surface-muted);border-radius:99px;overflow:hidden}
 .pb-bar{height:100%;background:var(--ok);border-radius:99px;transition:width .6s ease}
 .pb-meta{font-size:11px;color:var(--mut);margin-top:6px}
+.cred-hero{display:flex;flex-direction:column;align-items:center;text-align:center}
+.cred-hero .pb-meta{margin-top:6px}
+.cred-label{font-size:12px;color:var(--mut);margin-top:2px}
+.cred-num{font-size:28px;font-weight:700;color:var(--fg);font-variant-numeric:tabular-nums;line-height:1.15}
 .actions{margin-top:12px;display:flex;gap:8px}
 .field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg)}
 /* 右上角滑入通知栈 */
@@ -182,6 +186,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   </div>
   <div class="bar">
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
+    <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
   </div>
   <div class="filter-bar" id="filterBar">
     <button type="button" class="ftag active" data-region="all" onclick="filterRegion('all',this)">全部 <span class="cnt" id="cntAll">0</span></button>
@@ -192,9 +197,30 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
 </div>
+<div class="modal-mask" id="desensitizeModal" onclick="onDesensitizeMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="desensitizeModalTitle">
+    <div class="modal-hd">
+      <h2 id="desensitizeModalTitle">屏蔽词设置</h2>
+      <button type="button" class="modal-x" onclick="closeDesensitizeModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <label class="toggle"><input type="checkbox" id="desensitizeEnabled"> 启用屏蔽词混淆</label>
+      <p class="hint">当前词表：<span id="desensitizeSource"></span>。每行一个词，留空保存为空词表。</p>
+      <label class="hint" for="desensitizeTerms">词表</label>
+      <textarea id="desensitizeTerms" rows="10" placeholder="每行一个词"></textarea>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="restoreDesensitizeTerms(this)">恢复默认词表</button>
+      <button type="button" class="sec" onclick="restoreAllDesensitizeDefaults(this)">恢复全部默认</button>
+      <button type="button" class="sec" onclick="closeDesensitizeModal()">取消</button>
+      <button type="button" onclick="saveDesensitize(this)">保存</button>
+    </div>
+  </div>
+</div>
 <div class="toasts" id="toasts"></div>
 <script>
-const API = "/v0/management/plugins/qwenwork";
+const MANAGEMENT_BASE_PATH=__WB_MANAGEMENT_BASE_PATH_JSON__;
+const API=MANAGEMENT_BASE_PATH+"/plugins/qwenwork";
 
 /* ---------- management key acquisition (3 fallbacks, zero config) ----------
    1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
@@ -268,15 +294,19 @@ function fmtRemain(c){if(!c)return "-";const t=(c.total_remain||0)+(c.total_used
 function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function progressHTML(c){
   // remain = spendable, used = cycle spend, size = cap. Free-tier accounts have
-  // no fixed cap (backend sets free_tier when quota.total==null): show remaining
-  // only. Exceeded is the upstream quota.exceeded flag, authoritative for both
-  // enterprise and free accounts. null means "not loaded yet".
+  // no fixed cap (backend sets free_tier when quota.total==null). Exceeded is
+  // the upstream quota.exceeded flag, authoritative for both enterprise and
+  // free accounts. null means "not loaded yet".
   if(!c)return '<div class="pb"><div class="pb-label"><span>可用积分</span><span class="spin"></span>加载中…</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>';
   const remain=c.total_remain||0, used=c.total_used||0;
   const size=c.total_size||0;
   if(c.free_tier){
-    if(c.exceeded)return '<div class="pb"><div class="pb-label"><span>可用积分</span><span>已用完</span></div><div class="pb-track"><div class="pb-bar" style="width:100%;background:var(--err)"></div></div><div class="pb-meta">免费额度已用完</div></div>';
-    return '<div class="pb"><div class="pb-label"><span>剩余积分</span><span>'+remain+'</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div><div class="pb-meta">免费版 · 无固定额度上限</div></div>';
+    const when=c.fetched_at?`<div class="pb-meta">快照 ${esc(String(c.fetched_at).replace('T',' ').replace('Z',' UTC'))}</div>`:'';
+    // Free-tier: upstream exposes NO total/used — a progress bar would always
+    // sit at 0% and any "额度池" number would be fabricated. Show a centered
+    // hero number with the label directly beneath it.
+    if(c.exceeded)return '<div class="pb cred-hero"><div class="cred-num" style="color:var(--err)">已用完</div><div class="cred-label">剩余额度</div><div class="pb-meta">免费额度已用完</div></div>';
+    return '<div class="pb cred-hero"><div class="cred-num">'+remain+'</div><div class="cred-label">剩余额度</div>'+when+'</div>';
   }
   const total=size>0?size:(remain+used);
   const pct=total>0?Math.round(used/total*100):0;
@@ -443,13 +473,13 @@ function accountsForFilter(accounts){
 }
 function creditOf(a){
   const cr=a&&a.credits;
-  if(!cr) return {remain:0, used:0, size:0, known:false};
+  if(!cr) return {remain:0, used:0, size:0, known:false, freeTier:false};
   const remain=Number(cr.total_remain)||0;
   const used=Number(cr.total_used)||0;
   const size=Number(cr.total_size)||0;
   // known if we have any usage signal, size, or packages
   const known=remain>0||used>0||size>0||(Array.isArray(cr.packages)&&cr.packages.length>0);
-  return {remain, used, size, known};
+  return {remain, used, size, known, freeTier:!!cr.free_tier};
 }
 function renderSummary(accounts){
   const box=document.getElementById("summaryBox");
@@ -461,27 +491,36 @@ function renderSummary(accounts){
     return;
   }
   const scoped=accountsForFilter(all);
-  let remain=0, used=0, size=0, knownN=0, disabledN=0, exhaustedN=0;
+  let knownN=0, disabledN=0, exhaustedN=0;
   let cnRemain=0, cnUsed=0;
+  let freeRemain=0, freeN=0;          // free-tier accounts: remaining-only, no pool
+  let meteredRemain=0, meteredUsed=0, meteredSize=0, meteredN=0;
   scoped.forEach(a=>{
     const c=creditOf(a);
-    if(c.known){ remain+=c.remain; used+=c.used; size+=c.size; knownN++; }
+    if(c.known){
+      knownN++;
+      if(c.freeTier){ freeRemain+=c.remain; freeN++; }
+      else { meteredRemain+=c.remain; meteredUsed+=c.used; meteredSize+=c.size; meteredN++; }
+    }
     if(a.disabled) disabledN++;
     if(a.exhausted||(c.known&&c.remain===0&&(c.used>0||c.size>0))) exhaustedN++;
   });
-  let allRemain=0, allUsed=0, allSize=0;
+  let allFreeRemain=0, allMeteredRemain=0, allMeteredUsed=0, allMeteredSize=0;
   all.forEach(a=>{
     const c=creditOf(a);
     if(!c.known) return;
-    allRemain+=c.remain; allUsed+=c.used; allSize+=c.size;
-    
+    if(c.freeTier) allFreeRemain+=c.remain;
+    else { allMeteredRemain+=c.remain; allMeteredUsed+=c.used; allMeteredSize+=c.size; }
     cnRemain+=c.remain; cnUsed+=c.used;
   });
-  const total=size>0?size:(remain+used);
-  const pct=total>0?Math.round(used/total*100):0;
-  let barColor="var(--ok)"; if(pct>60)barColor="var(--warn)"; if(pct>85)barColor="var(--err)";
+  // Metered-only progress: free-tier accounts carry no total, so mixing their
+  // remaining into the pool produced nonsense like 剩余 2251 > 额度池 2000.
+  const mRemain=meteredRemain, mUsed=meteredUsed, mSize=meteredSize;
+  const mTotal=mSize>0?mSize:(mRemain+mUsed);
+  const mPct=mTotal>0?Math.round(mUsed/mTotal*100):0;
+  let barColor="var(--ok)"; if(mPct>60)barColor="var(--warn)"; if(mPct>85)barColor="var(--err)";
   const scopeLabel="全部账号";
-  const allTotal=allSize>0?allSize:(allRemain+allUsed);
+  const allMTotal=allMeteredSize>0?allMeteredSize:(allMeteredRemain+allMeteredUsed);
   box.style.display="block";
   box.innerHTML=`
     <div class="summary-hd">
@@ -489,20 +528,20 @@ function renderSummary(accounts){
       <div class="summary-meta">${scoped.length} 个账号 · 有数据 ${knownN} · 禁用 ${disabledN} · 耗尽 ${exhaustedN}</div>
     </div>
     <div class="summary-grid">
-      <div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">${remain}</div></div>
-      <div class="summary-item"><div class="k">已用(消耗)</div><div class="v ${pct>85?"err":(pct>60?"warn":"")}">${used}</div></div>
-      <div class="summary-item"><div class="k">额度池</div><div class="v">${total||"-"}</div></div>
-      <div class="summary-item"><div class="k">消耗占比</div><div class="v ${pct>85?"err":(pct>60?"warn":"ok")}">${total?pct+"%":"-"}</div></div>
+      <div class="summary-item"><div class="k">剩余(可用)</div><div class="v ok">${mRemain+freeRemain}</div></div>
+      <div class="summary-item"><div class="k">已用(消耗)</div><div class="v ${mPct>85?"err":(mPct>60?"warn":"")}">${mUsed}</div></div>
+      <div class="summary-item"><div class="k">额度池</div><div class="v">${mTotal||"-"}</div></div>
+      <div class="summary-item"><div class="k">消耗占比</div><div class="v ${mPct>85?"err":(mPct>60?"warn":"ok")}">${mTotal?mPct+"%":"-"}</div></div>
     </div>
     <div class="pb">
-      <div class="pb-label"><span>消耗进度（已用/额度池）</span><span>${total?pct+"%":"-"}</span></div>
-      <div class="pb-track"><div class="pb-bar" style="width:${total?pct:0}%;background:${barColor}"></div></div>
-      <div class="pb-meta">剩余 ${remain} · 已用 ${used} · 额度池 ${total||0}</div>
+      <div class="pb-label"><span>消耗进度（企业额度池）</span><span>${mTotal?mPct+"%":"-"}</span></div>
+      <div class="pb-track"><div class="pb-bar" style="width:${mTotal?mPct:0}%;background:${barColor}"></div></div>
+      <div class="pb-meta">企业池：剩余 ${mRemain} · 已用 ${mUsed} · 额度池 ${mTotal||0}${meteredN?` · ${meteredN} 个账号`:''}${freeN?`　|　免费额度：${freeRemain}（${freeN} 个账号）`:''}</div>
     </div>
     ${currentFilter==="all"?`
     <div class="pb-meta" style="margin-top:10px">CN 可用 ${cnRemain} / 已用 ${cnUsed}</div>
     `:`
-    <div class="pb-meta" style="margin-top:10px">全部账号池：可用 ${allRemain} · 已用 ${allUsed} · 池 ${allTotal||0}</div>
+    <div class="pb-meta" style="margin-top:10px">全部账号：企业池剩余 ${allMeteredRemain} · 已用 ${allMeteredUsed} · 池 ${allMTotal||0}${allFreeRemain?` · 免费额度 ${allFreeRemain}`:''}</div>
     `}
   `;
 }
@@ -551,6 +590,89 @@ async function api(path, opts={}){
   }
   authFailCount=0;
   return r.json();
+}
+async function managementAPI(path, opts={}){
+  const k=getKey();
+  if(!k){
+    showAuth();
+    throw new Error("需要管理密钥");
+  }
+  if(Date.now()<authFailUntil){
+    throw new Error("认证多次失败，请稍后重试（防 IP 封禁）");
+  }
+  const r=await fetch(MANAGEMENT_BASE_PATH+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
+  if(r.status===401){
+    throw new Error("management key 无效或缺失");
+  }
+  if(r.status===403){
+    let body="";
+    try{body=await r.text()}catch(_){}
+    throw new Error(body.trim()||"禁止访问 (403)");
+  }
+  return r.json();
+}
+function renderDesensitizeSettings(d){
+  document.getElementById("desensitizeEnabled").checked=!!d.enabled;
+  document.getElementById("desensitizeTerms").value=(d.terms||[]).join("\n");
+  document.getElementById("desensitizeSource").textContent=d.source==="custom"?"自定义词表":"内置默认词表";
+}
+async function loadDesensitizeSettings(){
+  renderDesensitizeSettings(await api("/desensitize"));
+}
+function sameDesensitizeTerms(left,right){
+  return Array.isArray(left)&&left.length===right.length&&left.every((term,i)=>term===right[i]);
+}
+async function waitForDesensitizeSettings(matches){
+  for(let attempt=0;attempt<20;attempt++){
+    const d=await api("/desensitize");
+    if(matches(d)){
+      renderDesensitizeSettings(d);
+      return;
+    }
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  throw new Error("设置已写入，但运行时未应用");
+}
+async function openDesensitizeModal(){
+  try{
+    await loadDesensitizeSettings();
+    document.getElementById("desensitizeModal").classList.add("show");
+  }catch(e){toast("读取屏蔽词设置失败","err",e.message||String(e))}
+}
+function closeDesensitizeModal(){
+  document.getElementById("desensitizeModal").classList.remove("show");
+}
+function onDesensitizeMaskClick(e){
+  if(e.target===document.getElementById("desensitizeModal")) closeDesensitizeModal();
+}
+async function saveDesensitize(btn){
+  const terms=[...new Set(document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean))];
+  const enabled=document.getElementById("desensitizeEnabled").checked;
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/qwenwork/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:enabled,desensitize_terms:terms})});
+    await waitForDesensitizeSettings(d=>d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms));
+    toast("屏蔽词设置已保存","ok");
+  }catch(e){toast("保存屏蔽词设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreDesensitizeTerms(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/qwenwork/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize_terms:null})});
+    await waitForDesensitizeSettings(d=>d.source==="default");
+    toast("已恢复默认词表","ok");
+  }catch(e){toast("恢复默认词表失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
+}
+async function restoreAllDesensitizeDefaults(btn){
+  busy(btn,true);
+  try{
+    await managementAPI("/plugins/qwenwork/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({desensitize:false,desensitize_terms:null})});
+    await waitForDesensitizeSettings(d=>!d.enabled&&d.source==="default");
+    toast("已恢复全部默认设置","ok");
+  }catch(e){toast("恢复全部默认设置失败","err",e.message||String(e))}
+  finally{busy(btn,false)}
 }
 async function load(force, btn){
   const g=document.getElementById("grid");

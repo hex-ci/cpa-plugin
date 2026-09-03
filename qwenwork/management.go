@@ -114,6 +114,7 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodPost, Path: base + "/select", Description: "Select the active account card used for chat routing (body: {auth_index})."},
 			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Manually refresh access tokens for all accounts (or one with auth_index)."},
 			{Method: http.MethodGet, Path: base + "/keepalive/status", Description: "Last keepalive run summary + config."},
+			{Method: http.MethodGet, Path: base + "/desensitize", Description: "Get effective QwenWork desensitize runtime settings."},
 		},
 		Resources: []resourceRoute{
 			{Path: "/panel", Menu: "QwenWork", Description: "QwenWork dashboard: credits, check-in, plan, import."},
@@ -155,6 +156,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch {
+	case req.Method == http.MethodGet && path == base+"/desensitize":
+		cfg := currentFeatureRuntime()
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{
+			"enabled": cfg.desensitizeEnabled,
+			"terms":   append([]string(nil), cfg.desensitizeTerms...),
+			"source":  cfg.desensitizeSource,
+		}))
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboardEx(false, false)))
 	case req.Method == http.MethodPost && path == base+"/refresh":

@@ -5,12 +5,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // plugin-level config decoded from plugin.register/reconfigure config_yaml.
@@ -48,8 +53,10 @@ const defaultUsageReportURL = "http://127.0.0.1:8317/v0/management/usage/import"
 
 const fallbackUsageReportURL = "http://cpa-manager-plus:8317/v0/management/usage/import"
 
-// configure decodes plugin config from the lifecycle request.
-func configure(raw []byte) {
+// configure decodes plugin config from the lifecycle request. Invalid config
+// fails closed: the plugin keeps its previous settings and the error surfaces
+// to the host (register/reconfigure reject it, mirroring WorkBuddy).
+func configure(raw []byte) error {
 	// Parse config without holding any lock (fixes nested-lock hazard).
 	nextLifecycleAuto := true
 	nextSchedulerMode := schedulerModeOff // reset to default on reconfigure
@@ -57,44 +64,35 @@ func configure(raw []byte) {
 	nextMgmtKey := ""
 
 	cfgURL, cfgKey := "", ""
+	var configYAML []byte
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
 		}
-		if err := json.Unmarshal(raw, &req); err == nil {
-			for _, line := range strings.Split(string(req.ConfigYAML), "\n") {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "lifecycle_auto:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "lifecycle_auto:"))
-					v = strings.Trim(v, "\"'")
-					nextLifecycleAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-				}
-				if strings.HasPrefix(line, "scheduler_mode:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "scheduler_mode:"))
-					v = strings.Trim(v, "\"'")
-					if v == schedulerModeCredits {
-						nextSchedulerMode = schedulerModeCredits
-					}
-				}
-				if strings.HasPrefix(line, "usage_report_url:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_url:"))
-					cfgURL = strings.Trim(v, "\"'")
-				}
-				if strings.HasPrefix(line, "usage_report_key:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "usage_report_key:"))
-					cfgKey = strings.Trim(v, "\"'")
-				}
-				if strings.HasPrefix(line, "management_key:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "management_key:"))
-					nextMgmtKey = strings.Trim(v, "\"'")
-				}
-				if strings.HasPrefix(line, "token_keepalive:") {
-					v := strings.TrimSpace(strings.TrimPrefix(line, "token_keepalive:"))
-					v = strings.Trim(v, "\"'")
-					nextKeepaliveAuto = v == "true" || v == "1" || v == "yes" || v == "on"
-				}
-			}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return errors.New("invalid plugin configuration")
 		}
+		configYAML = req.ConfigYAML
+	}
+	configScalars, err := parseTopLevelConfigScalars(configYAML)
+	if err != nil {
+		return err
+	}
+	if value, ok := configScalars["lifecycle_auto"]; ok {
+		nextLifecycleAuto = enabledConfigValue(value)
+	}
+	if configScalars["scheduler_mode"] == schedulerModeCredits {
+		nextSchedulerMode = schedulerModeCredits
+	}
+	cfgURL = configScalars["usage_report_url"]
+	cfgKey = configScalars["usage_report_key"]
+	nextMgmtKey = configScalars["management_key"]
+	if value, ok := configScalars["token_keepalive"]; ok {
+		nextKeepaliveAuto = enabledConfigValue(value)
+	}
+	nextFeatures, err := parseFeatureRuntime(configYAML)
+	if err != nil {
+		return err
 	}
 
 	// Apply each setting under its own lock — no nesting.
@@ -121,6 +119,124 @@ func configure(raw []byte) {
 
 	resolveUsageReport(cfgURL, cfgKey)
 	ensureScheduler()
+	commitFeatureRuntime(nextFeatures)
+	return nil
+}
+
+func parseValidatedConfigRoot(raw []byte) (*yaml.Node, error) {
+	if strings.TrimSpace(string(raw)) == "" {
+		return nil, nil
+	}
+	var document yaml.Node
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&document); err != nil {
+		return nil, errors.New("invalid config_yaml")
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New("config_yaml must contain exactly one document")
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, errors.New("config_yaml must be a mapping")
+	}
+	root := document.Content[0]
+	if err := validateConfigYAMLNode(root, strings.Split(string(raw), "\n")); err != nil {
+		return nil, err
+	}
+	return root, nil
+}
+
+func validateConfigYAMLNode(node *yaml.Node, lines []string) error {
+	if node == nil {
+		return nil
+	}
+	if node.Kind == yaml.AliasNode || node.Alias != nil || node.Anchor != "" {
+		return errors.New("config_yaml must not use anchors or aliases")
+	}
+	if node.Style&yaml.TaggedStyle != 0 || nodeStartsWithNonSpecificTag(node, lines) {
+		return errors.New("config_yaml must not use explicit tags")
+	}
+	if node.Kind == yaml.MappingNode {
+		seen := make(map[string]struct{}, len(node.Content)/2)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+				return errors.New("config_yaml mapping keys must be strings")
+			}
+			if key.Value == "<<" || key.Tag == "!!merge" {
+				return errors.New("config_yaml must not use merge keys")
+			}
+			if _, duplicate := seen[key.Value]; duplicate {
+				return errors.New("config_yaml must not contain duplicate keys")
+			}
+			seen[key.Value] = struct{}{}
+		}
+	}
+	for _, child := range node.Content {
+		if err := validateConfigYAMLNode(child, lines); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nodeStartsWithNonSpecificTag(node *yaml.Node, lines []string) bool {
+	if node.Line < 1 || node.Line > len(lines) || node.Column < 1 {
+		return false
+	}
+	line := []rune(strings.TrimSuffix(lines[node.Line-1], "\r"))
+	column := node.Column - 1
+	if column >= len(line) || line[column] != '!' {
+		return false
+	}
+	return column+1 == len(line) || line[column+1] == ' ' || line[column+1] == '	'
+}
+
+func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
+	root, err := parseValidatedConfigRoot(raw)
+	if err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return nil, nil
+	}
+	values := make(map[string]string, len(root.Content)/2)
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key, value := root.Content[i], root.Content[i+1]
+		if key.Kind != yaml.ScalarNode {
+			continue
+		}
+
+		expected := ""
+		switch key.Value {
+		case "lifecycle_auto", "token_keepalive":
+			expected = "boolean"
+		case "scheduler_mode", "usage_report_url", "usage_report_key", "management_key":
+			expected = "string"
+		default:
+			continue
+		}
+		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+			continue
+		}
+		if value.Kind != yaml.ScalarNode {
+			return nil, errors.New(key.Value + " must be a scalar " + expected)
+		}
+		if expected == "boolean" {
+			if value.Tag != "!!bool" && value.Tag != "!!int" && value.Tag != "!!str" {
+				return nil, errors.New(key.Value + " must be a boolean")
+			}
+		} else if value.Tag != "!!str" {
+			return nil, errors.New(key.Value + " must be a string")
+		}
+		values[key.Value] = strings.TrimSpace(value.Value)
+	}
+	return values, nil
+}
+
+func enabledConfigValue(value string) bool {
+	value = strings.ToLower(value)
+	return value == "true" || value == "1" || value == "yes" || value == "on"
 }
 
 // resolveUsageReport fills usageReportURL/key from config → env → secret files.

@@ -216,9 +216,10 @@ func pollDeviceToken(nonce, verifier string) (*deviceTokenResponse, bool, error)
 }
 
 // refreshDeviceToken calls POST /api/v1/deviceToken/refresh with the ory_rt_
-// refresh token plus target:"c" (qwenwork's device-flow refresh contract).
+// refresh token. No target field: target:"c" pins the refreshed identity to
+// the personal account and breaks enterprise sessions (see keepalive.go).
 func refreshDeviceToken(drt string) (*deviceTokenResponse, error) {
-	body, _ := json.Marshal(map[string]string{"refresh_token": drt, "target": "c"})
+	body := refreshBody(drt)
 	data, _, err := doRawJSON(sharedHTTPClient(), http.MethodPost, upstreamBaseCN+"/api/v1/deviceToken/refresh", nil, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
