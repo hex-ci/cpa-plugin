@@ -53,6 +53,7 @@ type featureRuntimeConfig struct {
 	enterpriseCredits         bool
 	enterpriseCreditsExplicit bool
 	configuredModels          []string
+	desktopModelDiscovery     bool
 }
 
 var featureRuntime atomic.Pointer[featureRuntimeConfig]
@@ -82,6 +83,11 @@ type featureConfigYAML struct {
 	OAuthClientMode   string    `yaml:"oauth_client_mode"`
 	EnterpriseCredits *bool     `yaml:"enterprise_credits"`
 	Models            yaml.Node `yaml:"models"`
+	// DesktopModelDiscovery 开启后，抓取模型目录时会额外以官方桌面端身份
+	// 再请求一次上游并取两份名单的并集。上游目录接口按请求身份返回不同
+	// 名单，某些模型只在桌面身份下可见（反之亦然），并集才是完整可用集。
+	// 默认关闭：保持原有的"每轮抓取只打一次上游"行为不变。
+	DesktopModelDiscovery *bool `yaml:"desktop_model_discovery"`
 }
 
 func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
@@ -124,6 +130,7 @@ func parseFeatureRuntime(raw []byte) (*featureRuntimeConfig, error) {
 		enterpriseCredits:         doc.EnterpriseCredits != nil && *doc.EnterpriseCredits,
 		enterpriseCreditsExplicit: doc.EnterpriseCredits != nil,
 		configuredModels:          models,
+		desktopModelDiscovery:     doc.DesktopModelDiscovery != nil && *doc.DesktopModelDiscovery,
 	}, nil
 }
 

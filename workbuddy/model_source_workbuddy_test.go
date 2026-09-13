@@ -546,6 +546,52 @@ func TestFetchWorkBuddyCatalogRejectsInvalidRealmBeforeRequest(t *testing.T) {
 	}
 }
 
+// mergeModelFacts 的两个核心性质：主名单顺序/详情优先，补充名单只追加新 ID。
+func TestMergeModelFactsAppendsOnlyNewIDs(t *testing.T) {
+	limit := int64(4096)
+	primary := []modelFacts{{ID: "shared", ContextLength: &limit}, {ID: "primary-only"}}
+	extra := []modelFacts{{ID: "shared", Name: "overwritten?"}, {ID: "extra-only"}}
+
+	got := mergeModelFacts(primary, extra)
+	if len(got) != 3 {
+		t.Fatalf("merged = %#v", got)
+	}
+	if got[0].ID != "shared" || got[0].ContextLength == nil || *got[0].ContextLength != limit || got[0].Name != "" {
+		t.Fatalf("duplicate ID overwrote the primary entry: %#v", got[0])
+	}
+	if got[1].ID != "primary-only" || got[2].ID != "extra-only" {
+		t.Fatalf("order = %#v", got)
+	}
+}
+
+func TestMergeModelFactsHandlesEmptyInputs(t *testing.T) {
+	primary := []modelFacts{{ID: "primary-only"}}
+	if got := mergeModelFacts(primary, nil); len(got) != 1 || got[0].ID != "primary-only" {
+		t.Fatalf("nil extra = %#v", got)
+	}
+	if got := mergeModelFacts(primary, []modelFacts{}); len(got) != 1 {
+		t.Fatalf("empty extra = %#v", got)
+	}
+}
+
+// 开关关闭（默认）时，mergeDesktopModels 必须原样返回主名单，且不发出补充请求
+// —— 这是默认路径"每轮抓取只打一次上游"约定的守卫。
+func TestMergeDesktopModelsIsInertWhenDisabled(t *testing.T) {
+	calls := 0
+	primary := []modelFacts{{ID: "primary-only"}}
+	got := mergeDesktopModels(func(string) (*hostHTTPResponse, error) {
+		calls++
+		return nil, nil
+	}, "/v3/config", primary)
+
+	if calls != 0 {
+		t.Fatalf("desktop request issued while the feature is off: calls=%d", calls)
+	}
+	if len(got) != 1 || got[0].ID != "primary-only" {
+		t.Fatalf("primary list was altered: %#v", got)
+	}
+}
+
 func syntheticAccessToken(t *testing.T, issuer string) string {
 	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))

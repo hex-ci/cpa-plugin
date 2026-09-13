@@ -93,6 +93,12 @@ const (
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
+	// desktopClientUA / desktopIDEVersion 是官方桌面端的请求身份，仅供
+	// desktop_model_discovery 开启时的补充目录抓取使用，版本与
+	// oauthProfileForMode 的桌面登录 profile 保持一致。
+	desktopClientUA   = "WorkBuddy/5.3.14 WorkBuddy/5.3.14 CLI/2.115.0"
+	desktopIDEVersion = "2.115.0"
+
 	// Plugin OAuth paths, gateway-relative: oauthProfileForMode picks the
 	// gateway per client mode (CN for cli/workbuddy, www.workbuddy.ai for
 	// workbuddy-ai), so only the CN forms below pin a base.

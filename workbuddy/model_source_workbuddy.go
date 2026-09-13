@@ -289,6 +289,31 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		return resp, nil
 	}
 
+	// requestAsDesktop 与 request 同源，只把客户端身份换成官方桌面端。
+	// 仅在 desktop_model_discovery 开启时才会被调用。
+	requestAsDesktop := func(path string) (*hostHTTPResponse, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+		if err != nil {
+			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
+		}
+		backendHeaders(req, sa)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Referer", origin+"/")
+		req.Header.Set("User-Agent", desktopClientUA)
+		req.Header.Set("X-IDE-Type", "WorkBuddy")
+		req.Header.Set("X-IDE-Name", "WorkBuddy")
+		req.Header.Set("X-IDE-Version", desktopIDEVersion)
+		resp, err := do(req, callbackID)
+		if err != nil {
+			return nil, &modelSourceError{Kind: modelSourceTransportFailure, err: err}
+		}
+		if resp == nil {
+			return nil, &modelSourceError{Kind: modelSourceTransportFailure, err: fmt.Errorf("empty HTTP response")}
+		}
+		return resp, nil
+	}
+
 	resp, err := request("/v3/config")
 	if err != nil {
 		return workBuddyCatalog{}, err
@@ -298,6 +323,7 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		if err != nil {
 			return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
+		models = mergeDesktopModels(requestAsDesktop, "/v3/config", models)
 		return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointV3Config, Models: models}, nil
 	}
 	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
@@ -315,7 +341,69 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 	if err != nil {
 		return workBuddyCatalog{}, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 	}
+	models = mergeDesktopModels(requestAsDesktop, "/console/enterprises/personal/models", models)
 	return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointLegacyPersonalModels, Models: models}, nil
+}
+
+// mergeDesktopModels 在 desktop_model_discovery 开启时，以官方桌面端身份再抓一次
+// 同一端点并合并名单；开关关闭（默认）时原样返回，不发出任何额外请求。
+//
+// 上游目录接口按请求身份返回不同名单，两个身份各有对方看不到的条目，
+// 因此需要并集。补充请求是尽力而为的：任何失败都只保留主名单，
+// 绝不会让整轮目录抓取失败。
+func mergeDesktopModels(
+	requestAsDesktop func(string) (*hostHTTPResponse, error), path string, primary []modelFacts,
+) []modelFacts {
+	cfg := currentFeatureRuntime()
+	if cfg == nil || !cfg.desktopModelDiscovery {
+		return primary
+	}
+	resp, err := requestAsDesktop(path)
+	if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+		return primary
+	}
+	desktop, err := parseWorkBuddyV3Config(resp.Body)
+	if err != nil || len(desktop) == 0 {
+		// 同一 URL 在不同身份下可能改走 legacy 形状，再试一次。
+		desktop, err = parseWorkBuddyLegacyModels(resp.Body)
+		if err != nil || len(desktop) == 0 {
+			return primary
+		}
+	}
+	return mergeModelFacts(primary, desktop)
+}
+
+// mergeModelFacts 按 ID 合并两份名单：主名单在前（保留其顺序与已解析限额），
+// 补充名单中新的 ID 追加在后；重复 ID 保留先出现者，避免丢失已有详情。
+func mergeModelFacts(primary, extra []modelFacts) []modelFacts {
+	if len(extra) == 0 {
+		return primary
+	}
+	merged := make([]modelFacts, 0, len(primary)+len(extra))
+	seen := make(map[string]struct{}, len(primary)+len(extra))
+	for _, model := range primary {
+		key := strings.TrimSpace(model.ID)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, model)
+	}
+	for _, model := range extra {
+		key := strings.TrimSpace(model.ID)
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, model)
+	}
+	if len(merged) == 0 {
+		return primary
+	}
+	return merged
 }
 
 // workBuddyRealmFromAccessToken decodes unverified JWT routing facts only.
