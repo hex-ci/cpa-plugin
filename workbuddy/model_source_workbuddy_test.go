@@ -269,6 +269,9 @@ func TestWorkBuddyRealmFromAccessToken(t *testing.T) {
 		{issuer: "https://codebuddy.cn/realms/cli", want: workBuddyRealmCN},
 		{issuer: "https://www.codebuddy.cn/auth/realms/copilot", want: workBuddyRealmCN},
 		{issuer: "https://copilot.tencent.com/realms/cli", want: workBuddyRealmCN},
+		// The CN desktop issuer (WorkBuddy for the CN region) also uses a www. host.
+		{issuer: "https://workbuddy.cn/realms/cli", want: workBuddyRealmCN},
+		{issuer: "https://www.workbuddy.cn/auth/realms/copilot", want: workBuddyRealmCN},
 		{issuer: "https://workbuddy.ai/realms/cli", want: workBuddyRealmGlobal},
 		// The international desktop issuer carries the www. host; matching the
 		// bare workbuddy.ai only left every Global account unauthorized.

@@ -431,7 +431,8 @@ func workBuddyRealmFromAccessToken(accessToken string) (workBuddyRealm, error) {
 		return workBuddyRealmGlobal, nil
 	}
 	switch strings.ToLower(issuer.Hostname()) {
-	case "codebuddy.cn", "www.codebuddy.cn", "copilot.tencent.com":
+	case "codebuddy.cn", "www.codebuddy.cn", "copilot.tencent.com",
+		"workbuddy.cn", "www.workbuddy.cn":
 		return workBuddyRealmCN, nil
 	default:
 		return "", fmt.Errorf("JWT issuer host is unsupported")
