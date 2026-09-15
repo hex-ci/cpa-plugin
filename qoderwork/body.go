@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,9 +47,19 @@ func cpaToUpstreamKey(cpaModel string) string {
 }
 
 // openAIMessage is one message in the OpenAI chat completion format.
+//
+// Content is json.RawMessage (not string) so multi-modal messages whose content
+// is a part array decode instead of failing the whole request with
+// "cannot unmarshal array into Go struct field ... of type string".
+// ToolCalls / ToolCallID are kept so assistant tool-call turns and their
+// matching tool results survive the round trip: the upstream rejects a tool
+// message without tool_call_id ("missing field `tool_call_id`").
 type openAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	ToolCalls  json.RawMessage `json:"tool_calls,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
 // openAIRequest is the CPA-facing chat completion request.
@@ -56,13 +67,46 @@ type openAIRequest struct {
 	Model    string          `json:"model"`
 	Messages []openAIMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
+	Tools    json.RawMessage `json:"tools,omitempty"`
 }
 
-// extractLatestUserPrompt returns the content of the last user message.
+// contentText renders a message content for use as a plain prompt string.
+// Handles both the string form and the part-array form; returns "" when the
+// content carries no text.
+func contentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// extractLatestUserPrompt returns the text of the last user message.
 func extractLatestUserPrompt(messages []openAIMessage) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
-			return messages[i].Content
+			if text := contentText(messages[i].Content); text != "" {
+				return text
+			}
 		}
 	}
 	return ""
@@ -121,14 +165,43 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 			}
 		}
 	}
-	// Append the actual conversation
+	// Append the actual conversation.
+	//
+	// Every field is forwarded verbatim (not just role+content): the upstream
+	// parses the full OpenAI message shape, and dropping tool_calls /
+	// tool_call_id makes it reject assistant tool-call turns and their tool
+	// results. Content stays as-is so part arrays (images) survive.
 	for _, m := range req.Messages {
-		systemMsgs = append(systemMsgs, map[string]any{
-			"role":    m.Role,
-			"content": m.Content,
-		})
+		out := map[string]any{"role": m.Role}
+		// The upstream rejects an assistant tool-call turn whose content is
+		// JSON null ("Messages with role 'tool' must be a response to a
+		// preceding message with 'tool_calls'"), so normalize null/absent
+		// content to an empty string. Non-null content (string or part array)
+		// is forwarded verbatim.
+		if len(m.Content) == 0 || string(m.Content) == "null" {
+			out["content"] = ""
+		} else {
+			out["content"] = m.Content
+		}
+		if m.Name != "" {
+			out["name"] = m.Name
+		}
+		if len(m.ToolCalls) > 0 {
+			out["tool_calls"] = m.ToolCalls
+		}
+		if m.ToolCallID != "" {
+			out["tool_call_id"] = m.ToolCallID
+		}
+		systemMsgs = append(systemMsgs, out)
 	}
 	base["messages"] = systemMsgs
+
+	// Forward the caller's tool definitions so the upstream can actually call
+	// them; the template's own tool list stays as the fallback when the
+	// request carries none.
+	if len(req.Tools) > 0 {
+		base["tools"] = req.Tools
+	}
 
 	// business
 	if biz, ok := base["business"].(map[string]any); ok {
