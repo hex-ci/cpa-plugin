@@ -95,6 +95,15 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .pb-track{height:8px;background:var(--surface-muted);border-radius:99px;overflow:hidden}
 .pb-bar{height:100%;background:var(--ok);border-radius:99px;transition:width .6s ease}
 .pb-meta{font-size:11px;color:var(--mut);margin-top:6px}
+.cgroups{margin-top:10px;border-top:1px dashed var(--border);padding-top:8px}
+.cgroup{margin-bottom:8px}
+.cgroup:last-child{margin-bottom:0}
+.cg-head{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);margin-bottom:4px}
+.cg-name{font-weight:600;color:var(--fg)}
+.ctag{font-size:10px;font-weight:600;border:1px solid var(--border);border-radius:99px;padding:1px 8px}
+.cg-nums{margin-left:auto;font-variant-numeric:tabular-nums}
+.cg-track{height:5px}
+.cg-time{font-size:11px;color:var(--mut);margin-top:3px}
 .actions{margin-top:12px;display:flex;gap:8px}
 .field-input{flex:1;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--fg)}
 /* 右上角滑入通知栈 */
@@ -179,7 +188,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1>WorkBuddy 账号面板</h1>
-  <div class="sub">积分余额 · CN 每日签到（09:00/21:00）· Global 专家包一次性手动领取 · 耗尽自动关/删</div>
+  <div class="sub">积分余额 · 按客户端口径分组 · CN 每日签到（09:00/21:00）· 耗尽自动关/删</div>
   <div id="modelStatus" class="model-status" role="status" aria-live="polite" aria-atomic="true" hidden></div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
     <div style="margin-bottom:8px;color:var(--mut)">需要管理密钥（management key）才能访问账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。错误密钥请勿连点，避免 IP 封禁。</div>
@@ -367,7 +376,20 @@ function progressHTML(c, disabled){
   let color='var(--ok)'; if(pct>60)color='var(--warn)'; if(pct>85||isExhausted)color='var(--err)';
   const rightLabel=(isExhausted&&total===0)?'<span style="color:var(--err)">已耗尽</span>':`已用 ${used} · ${pct}%`;
   const when=c.fetched_at?` · 快照 ${esc(String(c.fetched_at).replace('T',' ').replace('Z',' UTC'))}`:'';
-  return `<div class="pb"><div class="pb-label"><span>可用 ${remain}</span><span>${rightLabel}</span></div><div class="pb-track"><div class="pb-bar" style="width:${pct}%;background:${color}"></div></div><div class="pb-meta">剩余 ${remain} · 已用 ${used} · 额度池 ${total}${c.pack_count?` · ${c.pack_count} 个包`:''}${when}</div></div>`;
+  return `<div class="pb"><div class="pb-label"><span>可用 ${remain}</span><span>${rightLabel}</span></div><div class="pb-track"><div class="pb-bar" style="width:${pct}%;background:${color}"></div></div><div class="pb-meta">剩余 ${remain} · 已用 ${used} · 额度池 ${total}${c.pack_count?` · ${c.pack_count} 个包`:''}${when}</div>${groupsHTML(c.groups)}</div>`;
+}
+// Client-shaped per-group breakdown (套餐基础/套餐赠送/购买积分/平台奖励积分,
+// unknown codes in 其他). Only non-empty groups render, so most accounts add
+// two rows; the tag mirrors the client's ≤24h / ≤3d expiry warnings.
+function groupsHTML(groups){
+  if(!groups||!groups.length) return '';
+  const tagStyle={warning:'var(--warn)',critical:'var(--err)'};
+  return '<div class="cgroups">'+groups.map(g=>{
+    const gpct=g.total>0?Math.round(g.used/g.total*100):(g.remain<=0&&g.used>0?100:0);
+    let gcolor='var(--ok)'; if(gpct>60)gcolor='var(--warn)'; if(gpct>85||(g.remain<=0&&g.total>0))gcolor='var(--err)';
+    const tag=g.expiry_tag?`<span class="ctag" style="color:${tagStyle[g.expiry_tag]||'var(--mut)'};border-color:${tagStyle[g.expiry_tag]||'var(--border)'}">${g.expiry_tag==='critical'?'24h内到期':'3天内到期'}</span>`:'';
+    return `<div class="cgroup"><div class="cg-head"><span class="cg-name">${esc(g.name)}</span>${tag}<span class="cg-nums">已用 ${g.used}/${g.total}</span></div><div class="pb-track cg-track"><div class="pb-bar" style="width:${gpct}%;background:${gcolor}"></div></div>${g.time_text?`<div class="cg-time">${esc(g.time_text)}</div>`:''}</div>`;
+  }).join('')+'</div>';
 }
 function bindCardActions(root){
   (root||document).querySelectorAll("[data-action]").forEach(btn=>{

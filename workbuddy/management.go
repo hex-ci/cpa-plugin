@@ -48,6 +48,10 @@ type creditsSummary struct {
 	// timestamp — not only the numbers — when diagnosing frozen credits.
 	FetchedAt string           `json:"fetched_at,omitempty"`
 	Packages  []packageSummary `json:"packages"`
+	// Groups is the client-shaped breakdown: one row per non-empty display
+	// group (plan base / plan bonus / addon / benefit, unknown codes in
+	// "other"). Rows sum to the totals above.
+	Groups []creditGroup `json:"groups,omitempty"`
 }
 
 type packageSummary struct {
@@ -86,6 +90,7 @@ var billingRetryDelays = []time.Duration{300 * time.Millisecond, 900 * time.Mill
 //	sometimes omitted entirely
 type resourcePackage struct {
 	PackageName         string `json:"PackageName"`
+	PackageCode         string `json:"PackageCode"`
 	CapacityRemain      int64  `json:"CapacityRemain"`
 	CapacityUsed        int64  `json:"CapacityUsed"`
 	CapacitySize        int64  `json:"CapacitySize"`
@@ -94,6 +99,10 @@ type resourcePackage struct {
 	CycleCapacitySize   int64  `json:"CycleCapacitySize"`
 	CycleStartTime      string `json:"CycleStartTime"`
 	CycleEndTime        string `json:"CycleEndTime"`
+	// DeductionEndTime is the validity horizon in epoch milliseconds. The
+	// group time bases prefer it over CycleEndTime (which for many grant packs
+	// is just the current cycle's end, refreshed monthly).
+	DeductionEndTime int64 `json:"DeductionEndTime"`
 }
 
 // -----------------------------------------------------------------------------

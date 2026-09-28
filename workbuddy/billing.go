@@ -367,6 +367,8 @@ func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*
 	// Remain = currently spendable. Used = consumed this cycle. Size = capacity.
 	// Daily check-in adds packages → Size and Remain go UP; that is grant, not usage.
 	sum := &creditsSummary{}
+	// Groups: the client's per-group breakdown, built from the same packages.
+	groups := newCreditGroupAccumulator(isGlobalDomain(sa.Auth.Domain), now)
 	for _, a := range all {
 		remain, used, size := packageRemainUsed(a)
 		sum.TotalRemain += remain
@@ -380,7 +382,9 @@ func fetchPersonalUserResourceWithCallback(sa *storedAuth, callbackID string) (*
 			CycleStart: a.CycleStartTime,
 			CycleEnd:   a.CycleEndTime,
 		})
+		groups.add(a, remain, used, size)
 	}
+	sum.Groups = groups.rows()
 	sum.PackCount = len(sum.Packages)
 	// Reconcile used with size-remain so UI totals always add up when size known.
 	if sum.TotalSize > 0 {
