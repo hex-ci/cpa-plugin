@@ -71,6 +71,45 @@ func TestUnionModelFacts(t *testing.T) {
 	})
 }
 
+// The catalogue is UA-scoped. Each client shape lists models the other omits
+// (measured on the live service: the Global desktop shape adds three the CLI
+// shape lacks, the CLI shape adds one the desktop shape lacks), and every
+// model in either roster is callable — so the snapshot must carry the union
+// rather than whichever shape happened to be asked for.
+func TestFetchWorkBuddyCatalogMergesClientShapes(t *testing.T) {
+	desktopBody := []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["desktop-only","shared"]}]}}`)
+	cliBody := []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["shared","cli-only"]}]}}`)
+
+	do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {
+		if req.URL.Path == "/console/enterprises/personal/models" {
+			return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header)}, nil
+		}
+		body := cliBody
+		if req.Header.Get("User-Agent") == catalogUA {
+			body = desktopBody
+		}
+		return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: body}, nil
+	}
+
+	got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, workBuddyRealmGlobal), "cb", do)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Endpoint != workBuddyEndpointV3ConfigShapes {
+		t.Fatalf("endpoint = %q, want the merged shapes", got.Endpoint)
+	}
+	// The desktop shape's order leads, then the CLI shape's additions.
+	want := []string{"desktop-only", "shared", "cli-only"}
+	if len(got.Models) != len(want) {
+		t.Fatalf("models = %#v", got.Models)
+	}
+	for i, id := range want {
+		if got.Models[i].ID != id {
+			t.Fatalf("models[%d] = %q, want %q (full: %#v)", i, got.Models[i].ID, id, got.Models)
+		}
+	}
+}
+
 // A refresh must survive one endpoint failing: the reachable endpoint still
 // produces a catalogue, and the snapshot records which shape it came from.
 func TestFetchWorkBuddyCatalogUnionDegradesToSingleEndpoint(t *testing.T) {
@@ -110,7 +149,7 @@ func TestFetchWorkBuddyCatalogUnionDegradesToSingleEndpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Endpoint != workBuddyEndpointV3Config || len(got.Models) != 1 || got.Models[0].ID != "v3-model" {
+		if got.Endpoint != workBuddyEndpointV3ConfigShapes || len(got.Models) != 1 || got.Models[0].ID != "v3-model" {
 			t.Fatalf("catalog = %#v", got)
 		}
 	})

@@ -26,7 +26,6 @@
   积分错误立即触发 reconcile。
 - **每日签到** — CN 账号每天 09:00 和 21:00 自动签到（可配置）。面板可手动
   全部签到。Per-account 互斥锁防止多浏览器标签并发重复签到。
-- **Trial 领取** — Global 账号可在面板领取一次性 250 积分专家加油包。
 - **积分面板** — 内嵌面板 `/v0/resource/plugins/workbuddy/panel`，含积分
   进度条、套餐徽章、耗尽/禁用标记、CN/Global 筛选、凭证导入。
 - **调度器**（可选） — `scheduler_mode: credits` 让插件选中面板选中的账号；
@@ -140,7 +139,7 @@ plugins:
 模型 alias 和排除走 CPA 原生 `oauth-model-alias` 和 `oauth-excluded-models`
 配置，无需插件侧重复。
 
-设置 `proxy-url` 后，chat、billing/签到/trial、token refresh、
+设置 `proxy-url` 后，chat、billing/签到、token refresh、
 `executor.http_request`、usage 上报、OAuth state/token/account 请求和 usage
 endpoint 探测都会使用该代理。CLIProxyAPI v7.2.30 的 native plugin host HTTP
 API 不支持单次请求覆盖代理，因此显式插件代理由插件自身发送，不会出现在

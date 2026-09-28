@@ -46,9 +46,9 @@ management.go     managementRegistration + handleManagement + auth/ratelimit
 panel.go          buildDashboardEx + summarizeCredits + servePanel + panelHTML
 checkin.go        schedulerLoop + runAutoCheckin + handleManualCheckinWithCallback + 
                   classifyCheckinTargets/executeCheckinBatch/summarizeCheckinResults
-credits_handler.go handleImportAuth/CheckinConfig/ClaimTrial/SelectAuth/CreditsQuery
+credits_handler.go handleImportAuth/CheckinConfig/SelectAuth/CreditsQuery
 billing.go        fetchCheckinStatus/fetchUserResource/fetchPaymentType/
-                  performCheckinCall/performTrialCall + JSON helpers
+                  performCheckinCall + JSON helpers
 usage_config.go   configure + resolveUsageReport + probe* + config vars
 host_auth.go      hostAuthList/Get/GetBundle (host auth-store RPC)
 

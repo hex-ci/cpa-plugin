@@ -74,6 +74,18 @@ func TestClassifyUpstreamError(t *testing.T) {
 		{"11134 spaced json", 500, `{"code": 11134, "msg": "temporarily unavailable"}`, upstreamErrSoftRate},
 		{"11134 bare code", 500, `{"code":11134}`, upstreamErrSoftRate},
 
+		// --- capacity queue: 6020 waiting / 6021 full / 6022 per-user limit ---
+		// The upstream state means "no free slot", which the client answers by
+		// polling the queue and resending; the credential is untouched.
+		{"6020 waiting", 200, `{"code":6020,"msg":"waiting in queue","data":{"queue_position":7,"queue_size":40,"estimated_wait":30,"retry_after":5}}`, upstreamErrSoftRate},
+		{"6021 queue full", 200, `{"code":6021,"msg":"queue is full","data":{"queue_size":40}}`, upstreamErrSoftRate},
+		{"6022 user limit", 503, `{"code":6022,"msg":"too many pending requests for this user"}`, upstreamErrSoftRate},
+		{"6020 spaced json", 200, `{"code": 6020, "msg": "waiting"}`, upstreamErrSoftRate},
+		// A queue code must not swallow longer codes that merely start the
+		// same way, nor a 602x that is not part of the queue family.
+		{"60201 is not a queue code", 500, `{"code":60201,"msg":"internal error"}`, upstreamErrServer},
+		{"6023 is not a queue code", 500, `{"code":6023,"msg":"internal error"}`, upstreamErrServer},
+
 		// --- content firewall: never an account problem ---
 		{"11128 unapproved channel", 400, `{"code":11128,"msg":"Illegal API invocation from an unapproved channel"}`, upstreamErrContentBlocked},
 		{"security policy block", 400, `{"msg":"request blocked by security policy"}`, upstreamErrContentBlocked},

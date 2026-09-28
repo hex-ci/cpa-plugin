@@ -20,23 +20,22 @@ import (
 
 // wbAccount is one row of the dashboard.
 type wbAccount struct {
-	AuthIndex    string          `json:"auth_index"`
-	AuthID       string          `json:"auth_id,omitempty"`
-	Name         string          `json:"name"`
-	Label        string          `json:"label"`
-	Nickname     string          `json:"nickname"`
-	UID          string          `json:"uid"`
-	Region       string          `json:"region"`               // "cn" or "global"
-	Enterprise   bool            `json:"enterprise,omitempty"` // enterpriseId bound at login
-	Plan         string          `json:"plan"`
-	Status       string          `json:"status"`
-	Disabled     bool            `json:"disabled"`
-	Exhausted    bool            `json:"exhausted"`
-	Selected     bool            `json:"selected"` // panel active routing card
-	Credits      *creditsSummary `json:"credits,omitempty"`
-	Checkin      *checkinSummary `json:"checkin,omitempty"`
-	TrialClaimed bool            `json:"trial_claimed,omitempty"` // Global: expert trial already claimed
-	Error        string          `json:"error,omitempty"`
+	AuthIndex  string          `json:"auth_index"`
+	AuthID     string          `json:"auth_id,omitempty"`
+	Name       string          `json:"name"`
+	Label      string          `json:"label"`
+	Nickname   string          `json:"nickname"`
+	UID        string          `json:"uid"`
+	Region     string          `json:"region"`               // "cn" or "global"
+	Enterprise bool            `json:"enterprise,omitempty"` // enterpriseId bound at login
+	Plan       string          `json:"plan"`
+	Status     string          `json:"status"`
+	Disabled   bool            `json:"disabled"`
+	Exhausted  bool            `json:"exhausted"`
+	Selected   bool            `json:"selected"` // panel active routing card
+	Credits    *creditsSummary `json:"credits,omitempty"`
+	Checkin    *checkinSummary `json:"checkin,omitempty"`
+	Error      string          `json:"error,omitempty"`
 }
 
 type modelStatus struct {
@@ -188,9 +187,6 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 				acct.Checkin = ci
 				acct.Credits = cr
 				acct.Exhausted = isCreditsExhausted(cr)
-				if isGlobalDomain(sa.Auth.Domain) {
-					acct.TrialClaimed = hasTrialPack(cr)
-				}
 				// Keep note in sync (throttled); do not block dashboard on save errors.
 				_ = syncAuthNote(f.AuthIndex, f.ID, sa, cr, acct.Disabled)
 				acct.Error = strings.Join(errs, "; ")
@@ -202,9 +198,6 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 						acct.Checkin = e.checkin
 						acct.Credits = e.credits
 						acct.Exhausted = isCreditsExhausted(e.credits)
-						if isGlobalDomain(sa.Auth.Domain) {
-							acct.TrialClaimed = hasTrialPack(e.credits)
-						}
 					}
 				}
 			}

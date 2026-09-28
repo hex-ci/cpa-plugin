@@ -478,7 +478,6 @@ func TestInboundHandlersForwardHostCallbackID(t *testing.T) {
 				"buildDashboardExWithCallback(true, true, req.HostCallbackID)",
 				"handleManualCheckinWithCallback(req.ManagementRequest, req.HostCallbackID)",
 				"handleCreditsQueryWithCallback(req.ManagementRequest, req.HostCallbackID)",
-				"handleClaimTrialWithCallback(req.ManagementRequest, req.HostCallbackID)",
 				"handleKeepaliveNowWithCallback(req.ManagementRequest, req.HostCallbackID)",
 			},
 		},

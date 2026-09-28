@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -87,9 +88,17 @@ type workBuddyEndpointKind string
 const (
 	workBuddyEndpointV3Config             workBuddyEndpointKind = "v3_config"
 	workBuddyEndpointLegacyPersonalModels workBuddyEndpointKind = "legacy_personal_models"
-	// workBuddyEndpointV3ConfigUnion marks a catalogue assembled from both
-	// endpoints. The kind is persisted with the cache, so a reader can tell a
-	// union snapshot apart from a single-endpoint one.
+	// workBuddyEndpointV3ConfigShapes marks a catalogue assembled from both v3
+	// client shapes (desktop + CLI). They are not the same list: the two
+	// rosters differ in BOTH directions (measured on a Global account
+	// 2026-09-28: the desktop shape listed three models the CLI shape omitted,
+	// the CLI shape one the desktop shape omitted), and every model in either
+	// answered 200 on a chat request.
+	workBuddyEndpointV3ConfigShapes workBuddyEndpointKind = "v3_config+desktop"
+	// workBuddyEndpointV3ConfigUnion marks a catalogue assembled from the v3
+	// config (one or both shapes) plus the CN-only legacy endpoint. The kind is
+	// persisted with the cache, so a reader can tell a union snapshot apart
+	// from a single-source one.
 	workBuddyEndpointV3ConfigUnion workBuddyEndpointKind = "v3_config+legacy"
 )
 
@@ -505,12 +514,15 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 	ctx, cancel := context.WithTimeout(context.Background(), modelSourceRequestTimeout)
 	defer cancel()
 
-	request := func(path string) (*hostHTTPResponse, error) {
+	request := func(path, userAgent string) (*hostHTTPResponse, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
 		if err != nil {
 			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: err}
 		}
 		backendHeaders(req, sa)
+		if userAgent != "" {
+			req.Header.Set("User-Agent", userAgent)
+		}
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Origin", origin)
 		req.Header.Set("Referer", origin+"/")
@@ -524,56 +536,109 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		return resp, nil
 	}
 
-	// Both endpoints answer for an entitled account and each carries models the
-	// other lacks (measured: the enterprise roster adds "auto", the v3 roster
-	// adds one model the enterprise roster omits). Fetching only one loses
-	// whatever the other alone serves, so both are requested and merged.
+	// One /v3/config fetch per client shape. The response is UA-scoped: only a
+	// UA carrying the "WorkBuddy/" product segment gets the desktop-shaped
+	// payload (the version inside it is ignored — measured 2026-09-28 with
+	// variants "WorkBuddy/5.6.2", "WorkBuddy/x" and the full desktop string,
+	// all identical), while the CLI-shaped UA gets a smaller payload. The two
+	// rosters differ in BOTH directions and every model in either is callable
+	// (verified one by one on the live service), so both are fetched and
+	// merged; a single fetch would hide working models from clients.
 	//
-	// The merge is deliberately not all-or-nothing: a single-endpoint failure
-	// degrades to whatever the other endpoint returned rather than failing the
+	// The merge is deliberately not all-or-nothing: a single source failing
+	// degrades to whatever the others returned rather than failing the
 	// refresh, because a partial catalogue that lists working models beats no
-	// catalogue at all. Both failing is a real refresh failure.
-	v3Resp, v3Err := request("/v3/config")
-	var v3Models []modelFacts
-	v3OK := false
-	if v3Err == nil && v3Resp.StatusCode == http.StatusOK {
-		models, parseErr := parseWorkBuddyV3Config(v3Resp.Body)
-		if parseErr == nil {
-			v3Models, v3OK = models, true
-		} else {
-			v3Err = &modelSourceError{Kind: modelSourceSchemaFailure, err: parseErr}
+	// catalogue at all. All sources failing is a real refresh failure.
+	fetchV3 := func(userAgent string) ([]modelFacts, error) {
+		resp, err := request("/v3/config", userAgent)
+		if err != nil {
+			return nil, err
 		}
-	} else if v3Err == nil {
-		v3Err = &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: v3Resp.StatusCode}
+		if resp.StatusCode != http.StatusOK {
+			return nil, &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: resp.StatusCode}
+		}
+		models, parseErr := parseWorkBuddyV3Config(resp.Body)
+		if parseErr != nil {
+			return nil, &modelSourceError{Kind: modelSourceSchemaFailure, err: parseErr}
+		}
+		return models, nil
 	}
 
-	legacyResp, legacyErr := request("/console/enterprises/personal/models")
+	desktopModels, desktopErr := fetchV3(catalogUA)
+	cliModels, cliErr := fetchV3("")
+
+	var v3Models []modelFacts
+	v3OK := false
+	v3Kind := workBuddyEndpointV3Config
+	switch {
+	case desktopErr == nil && cliErr == nil:
+		// The desktop shape leads: it is the catalogue the official client
+		// reads, so its ordering and field values are the authoritative ones.
+		v3Models = unionModelFacts(desktopModels, cliModels)
+		v3OK = true
+		v3Kind = workBuddyEndpointV3ConfigShapes
+	case desktopErr == nil:
+		logModelSourceDegrade(realm, "cli catalogue shape unavailable", cliErr)
+		v3Models, v3OK = desktopModels, true
+	case cliErr == nil:
+		logModelSourceDegrade(realm, "desktop catalogue shape unavailable", desktopErr)
+		v3Models, v3OK = cliModels, true
+	}
+	var v3Err error
+	if !v3OK {
+		v3Err = desktopErr
+		if v3Err == nil {
+			v3Err = cliErr
+		}
+	}
+
+	// The legacy endpoint is a CN-only route. Measured on 2026-09-28: on the
+	// Global deployment (www.workbuddy.ai) every
+	// /console/enterprises/{personal|<uid>}/models request answers HTTP 500
+	// from APISIX, while /console/enterprises/personal/config/models answers
+	// 200 with an empty list — the route family exists, the model list does
+	// not. The official client reads its catalogue from /v3/config on both
+	// realms, so the Global realm is served by that endpoint alone: requesting
+	// the legacy path there buys one wasted round trip per refresh and a
+	// permanent degradation warning for what is a deployment fact, not a
+	// fault. If the route ever appears on Global, this is the one line to
+	// change.
+	legacyEnabled := realm == workBuddyRealmCN
+
 	var legacyModels []modelFacts
 	legacyOK := false
-	if legacyErr == nil && legacyResp.StatusCode == http.StatusOK {
-		models, parseErr := parseWorkBuddyLegacyModels(legacyResp.Body)
-		if parseErr == nil {
-			legacyModels, legacyOK = models, true
-		} else {
-			legacyErr = &modelSourceError{Kind: modelSourceSchemaFailure, err: parseErr}
+	var legacyErr error
+	if legacyEnabled {
+		legacyResp, err := request("/console/enterprises/personal/models", "")
+		legacyErr = err
+		if legacyErr == nil && legacyResp.StatusCode == http.StatusOK {
+			models, parseErr := parseWorkBuddyLegacyModels(legacyResp.Body)
+			if parseErr == nil {
+				legacyModels, legacyOK = models, true
+			} else {
+				legacyErr = &modelSourceError{Kind: modelSourceSchemaFailure, err: parseErr}
+			}
+		} else if legacyErr == nil {
+			legacyErr = &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: legacyResp.StatusCode}
 		}
-	} else if legacyErr == nil {
-		legacyErr = &modelSourceError{Kind: modelSourceHTTPFailure, StatusCode: legacyResp.StatusCode}
 	}
 
 	switch {
 	case v3OK && legacyOK:
+		// The legacy roster contributes models the v3 catalogue omits (on CN
+		// it supplies "auto"), so the two are merged the same way the client
+		// shapes are.
 		return workBuddyCatalog{
 			Realm:    realm,
 			Endpoint: workBuddyEndpointV3ConfigUnion,
 			Models:   unionModelFacts(v3Models, legacyModels),
 		}, nil
 	case v3OK:
-		// The primary endpoint alone. The legacy endpoint is entitlement-gated
-		// (measured 401 for a personal account with a valid token), so this is
-		// the expected shape for those accounts, not a fault.
+		// The v3 catalogue alone. On CN this is the fallback shape for an
+		// account without legacy entitlement (measured 401 for a personal
+		// account with a valid token); on Global it is the only shape.
 		logModelSourceDegrade(realm, "legacy endpoint unavailable", legacyErr)
-		return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointV3Config, Models: v3Models}, nil
+		return workBuddyCatalog{Realm: realm, Endpoint: v3Kind, Models: v3Models}, nil
 	case legacyOK:
 		logModelSourceDegrade(realm, "v3 endpoint unavailable", v3Err)
 		return workBuddyCatalog{Realm: realm, Endpoint: workBuddyEndpointLegacyPersonalModels, Models: legacyModels}, nil
@@ -619,14 +684,27 @@ func unionModelFacts(primary, secondary []modelFacts) []modelFacts {
 	return merged
 }
 
-// logModelSourceDegrade records a single-endpoint fallback. It is a notice, not
-// an error: one reachable endpoint still produced a usable catalogue.
+// logModelSourceDegrade records a single-source fallback. It is a notice, not
+// an error: the sources that answered still produced a usable catalogue.
+//
+// Each (realm, reason) pair is logged once per process. The catalogue is
+// re-fetched on every config reload and auth change, so an unconditional log
+// turned one permanent deployment fact (e.g. a route that only exists on one
+// realm) into a warning on every refresh. The per-account error codes in
+// model_status remain the live diagnostic surface.
 func logModelSourceDegrade(realm workBuddyRealm, reason string, cause error) {
 	if cause == nil {
 		return
 	}
+	key := string(realm) + "|" + reason
+	if _, loaded := modelSourceDegradeLogged.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
 	hostLogf("warn", fmt.Sprintf("workbuddy model catalog %s: %s (%v)", realm, reason, cause))
 }
+
+// modelSourceDegradeLogged tracks the (realm, reason) pairs already reported.
+var modelSourceDegradeLogged sync.Map
 
 // workBuddyRealmFromAccessToken decodes unverified JWT routing facts only.
 func workBuddyRealmFromAccessToken(accessToken string) (workBuddyRealm, error) {

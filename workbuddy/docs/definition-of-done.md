@@ -87,7 +87,6 @@
 | 流式 chat (Global 账号) | SSE 正常 |
 | OAuth 登录 (CN) | 完整 flow 出 token + auth 文件落盘 |
 | 签到 (CN) | 200 + today_checked_in=true + 面板显示已签到 |
-| Trial 领取 (Global) | 200 + trial_claimed=true |
 | Credits 查询 | 200 + packages 数组完整 |
 | 耗尽账号调度 | 切换到非耗尽账号 |
 | 面板载入 | 0 JS error + 0 `parse failed` |

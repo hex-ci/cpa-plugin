@@ -193,7 +193,6 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button class="sec" onclick="openDesensitizeModal()">屏蔽词设置</button>
     <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" onclick="claimTrialAll(this)" title="仅 Global · 一次性">全部领取</button>
     <label class="toggle" title="仅 CN 账号 09:00 / 21:00"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到(CN)</label>
     <span class="toggle" id="svtime"></span>
   </div>
@@ -351,13 +350,6 @@ function markCheckinDone(btn){
   btn.innerHTML="已签到";
   btn.dataset.orig="已签到";
 }
-function markTrialDone(btn){
-  if(!btn)return;
-  btn.disabled=true;
-  btn.className="done";
-  btn.innerHTML="已领取";
-  btn.dataset.orig="已领取";
-}
 function fmtRemain(c){if(!c)return "-";const t=(c.total_remain||0)+(c.total_used||0);return c.total_remain+" 余 / "+t+" 总"}
 function esc(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function progressHTML(c, disabled){
@@ -385,7 +377,6 @@ function bindCardActions(root){
       const act=ev.currentTarget.dataset.action;
       const idx=ev.currentTarget.dataset.authIndex;
       if(act==="checkin") checkin(idx, ev.currentTarget);
-      else if(act==="claim") claimTrial(idx, ev.currentTarget);
       else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
     });
@@ -402,17 +393,14 @@ function card(a){
   const selected=!!a.selected;
   const displayName=a.nickname||a.label||a.name||"";
   const regionBadge=`<span class="badge ${region}">${isGlobal?"Global":"CN"}</span>`;
-  // Enterprise: no check-in / no trial claim (quota is admin-managed).
-  // CN: 签到 button; Global: 领取专家加油包 button (or 已领取 if trial_claimed)
+  // Enterprise: no check-in (quota is admin-managed).
+  // Global: no check-in either (growth/check-in are CN-personal features).
+  // CN: 签到 button.
   let actionHTML;
   if(isEnt){
     actionHTML='';
   }else if(isGlobal){
-    if(a.trial_claimed){
-      actionHTML='<button class="done" disabled="disabled">已领取</button>';
-    }else{
-      actionHTML=`<button class="sec" data-action="claim" data-auth-index="${esc(a.auth_index)}">领取专家加油包</button>`;
-    }
+    actionHTML='';
   }else{
     const checked=ci.today_checked_in;
     const btnClass=checked?"done":"sec";
@@ -455,7 +443,6 @@ function lazyLoadCredits(accounts){
         if(acct&&acct.credits){
           a.credits=acct.credits;
           a.exhausted=acct.exhausted;
-          if(acct.trial_claimed!=null) a.trial_claimed=acct.trial_claimed;
           if(acct.plan) a.plan=acct.plan;
         }
         if(acct&&acct.error){ a.error=acct.error; }
@@ -798,7 +785,7 @@ function checkinResultToast(res, who){
     toast(name+"：企业版不走签到","warn",res.message||"额度由管理员按月发放");return;
   }
   if(res.reason==="global"||(/国际版|不支持/.test(String(res.message||"")))){
-    toast(name+"：国际版无需签到","warn",res.message||"请用领取专家加油包");return;
+    toast(name+"：国际版无需签到","warn",res.message||"");return;
   }
   if(res.reason==="already"||(res.skipped&&/already|已签|今日/.test(String(res.message||"")))){
     toast(name+"：今日已签到","ok",res.message||"");return;
@@ -876,7 +863,6 @@ async function refreshCredits(idx, btn){
     if(a){
       if(acct.credits) a.credits=acct.credits;
       if(acct.exhausted!=null) a.exhausted=acct.exhausted;
-      if(acct.trial_claimed!=null) a.trial_claimed=acct.trial_claimed;
       if(acct.plan) a.plan=acct.plan;
       if(acct.error) a.error=acct.error; else a.error="";
       updateOneCard(a);
@@ -934,37 +920,6 @@ async function checkinAll(btn){
     await load(false);
   }catch(e){toast("批量签到失败","err",e.message)}
   // load() re-renders grid; only restore toolbar button
-  busy(btn,false);
-}
-async function claimTrial(idx, btn){
-  busy(btn,true);
-  try{
-    const d=await api("/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
-    if(d.error){toast("领取失败","err",d.error);busy(btn,false);}
-    else if(d.already_claimed){toast((d.nickname||"账号")+"：已领取过","warn",d.message||"");markTrialDone(btn);}
-    else if(d.success){toast((d.nickname||"账号")+"：领取成功","ok","+250 积分 · 14天有效");markTrialDone(btn);}
-    else{toast((d.nickname||"账号")+"："+(d.message||"未知"),"warn");busy(btn,false);}
-    await load(false);
-  }catch(e){toast("领取请求失败","err",e.message);busy(btn,false);}
-}
-async function claimTrialAll(btn){
-  busy(btn,true);
-  try{
-    const d=await api("/accounts");
-    const accounts=(d.accounts||[]).filter(a=>(a.region||"cn")==="global"&&!a.trial_claimed);
-    if(!accounts.length){toast("没有可领取的账号","warn");busy(btn,false);return;}
-    let ok=0,fail=0,already=0;
-    for(const a of accounts){
-      try{
-        const r=await api("/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:a.auth_index})});
-        if(r.success)ok++;else if(r.already_claimed||r.error)already++;else fail++;
-      }catch(e){fail++;}
-    }
-    if(fail)toast("批量领取："+ok+" 成功 / "+already+" 已领 / "+fail+" 失败","err");
-    else if(ok)toast("批量领取："+ok+" 成功"+(already?" / "+already+" 已领":""),"ok");
-    else toast("全部账号已领取","warn");
-    await load(false);
-  }catch(e){toast("批量领取失败","err",e.message)}
   busy(btn,false);
 }
 async function toggleAuto(on){

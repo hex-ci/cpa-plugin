@@ -169,7 +169,7 @@ func validateModelCatalogCache(cache modelCatalogCacheV1, identitySHA256 string,
 	if cache.FetchedAt.IsZero() {
 		return fmt.Errorf("model cache fetched_at is missing")
 	}
-	if cache.Endpoint != workBuddyEndpointV3Config && cache.Endpoint != workBuddyEndpointLegacyPersonalModels && cache.Endpoint != workBuddyEndpointV3ConfigUnion {
+	if cache.Endpoint != workBuddyEndpointV3Config && cache.Endpoint != workBuddyEndpointV3ConfigShapes && cache.Endpoint != workBuddyEndpointLegacyPersonalModels && cache.Endpoint != workBuddyEndpointV3ConfigUnion {
 		return fmt.Errorf("model cache endpoint is invalid")
 	}
 	validated, err := validateModelFacts(cache.Models)

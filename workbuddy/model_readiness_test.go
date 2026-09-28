@@ -23,6 +23,13 @@ const (
 	modelRuntimeRawWorkBuddyBody      = "raw-workbuddy-response-body-secret"
 )
 
+// isCatalogRefreshLeg reports whether req is the leading leg of one catalogue
+// refresh. A refresh issues one request per client shape (desktop first, then
+// CLI), so tests that count refreshes must not count both legs.
+func isCatalogRefreshLeg(req *http.Request) bool {
+	return req.Header.Get("User-Agent") == catalogUA
+}
+
 func installModelStatesForTest(t *testing.T, states map[string]modelReadinessState) *modelRuntime {
 	t.Helper()
 	runtime := newModelRuntime(newModelStore(t.TempDir()), func(*http.Request, string) (*hostHTTPResponse, error) {
@@ -183,10 +190,10 @@ func TestModelRuntimeFreshBootstrapModelFutureSchemaIsCacheRead(t *testing.T) {
 	calls := 0
 	do := modelRuntimeFreshFaultDo(t, root, "")
 	runtime := newModelRuntime(store, func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
-		// Count refreshes, not legs: the union fetch issues two requests per
-		// refresh, and this test asserts that a future-schema cache stops the
-		// refresh from happening at all.
-		if req.URL.Host == "copilot.tencent.com" && req.URL.Path == "/v3/config" {
+		// Count refreshes, not legs: one refresh asks each client shape, and
+		// this test asserts that a future-schema cache stops the refresh from
+		// happening at all.
+		if isCatalogRefreshLeg(req) && req.URL.Host == "copilot.tencent.com" && req.URL.Path == "/v3/config" {
 			calls++
 		}
 		return do(req, callbackID)
@@ -338,10 +345,9 @@ func TestModelRuntimeSameAuthSingleflight(t *testing.T) {
 				// The ssoother leg of the union; contributes nothing here.
 				return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 			}
-			// Count refreshes, not legs: one refresh issues a v3 request and an
-			// enterprise-endpoint request, and this test asserts single-flight
-			// collapses concurrent refreshes into one.
-			if workBuddyCalls.Add(1) == 1 {
+			// Count refreshes, not legs: one refresh asks each client shape, and this
+			// test asserts single-flight collapses concurrent refreshes into one.
+			if isCatalogRefreshLeg(req) && workBuddyCalls.Add(1) == 1 {
 				close(started)
 			}
 			<-release
@@ -384,21 +390,21 @@ func TestModelRuntimeDifferentAuthIsolation(t *testing.T) {
 	cnRelease := make(chan struct{})
 	globalRelease := make(chan struct{})
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
-		// Count refreshes, not legs: the union fetch issues a v3 request and an
-		// enterprise-endpoint request per refresh, and this test asserts that
-		// two different auths refresh concurrently and independently.
+		// Count refreshes, not legs: one refresh asks each client shape, and this
+		// test asserts that two different auths refresh concurrently and
+		// independently.
 		if req.URL.Path == "/console/enterprises/personal/models" {
 			return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 		}
 		switch req.URL.Host {
 		case "copilot.tencent.com":
-			if cnCalls.Add(1) == 1 {
+			if isCatalogRefreshLeg(req) && cnCalls.Add(1) == 1 {
 				close(cnStarted)
 			}
 			<-cnRelease
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["cn-model"]}]}}`)}, nil
 		case "www.workbuddy.ai":
-			if globalCalls.Add(1) == 1 {
+			if isCatalogRefreshLeg(req) && globalCalls.Add(1) == 1 {
 				close(globalStarted)
 			}
 			<-globalRelease
@@ -718,8 +724,12 @@ func TestModelRuntimeConcurrentSharedIdentityBootstrapsRemainExecutable(t *testi
 	do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
 		switch req.URL.Host {
 		case "copilot.tencent.com":
-			started <- struct{}{}
-			<-release
+			// One refresh asks each client shape; signal once per refresh so the
+			// barrier below still counts refreshes.
+			if isCatalogRefreshLeg(req) {
+				started <- struct{}{}
+				<-release
+			}
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		default:
 			t.Fatalf("unexpected request %s", req.URL)
@@ -761,11 +771,15 @@ func TestModelRuntimeSharedIdentityFailureDoesNotDiscardConcurrentSuccess(t *tes
 			return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 		}
 		if strings.HasSuffix(req.Header.Get("Authorization"), "signature-good") {
-			close(successStarted)
-			<-releaseSuccess
+			if isCatalogRefreshLeg(req) {
+				close(successStarted)
+				<-releaseSuccess
+			}
 			return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 		}
-		close(failureReturned)
+		if isCatalogRefreshLeg(req) {
+			close(failureReturned)
+		}
 		return nil, errors.New(modelRuntimeRawWorkBuddyTransport)
 	}
 
@@ -821,15 +835,23 @@ func TestModelRuntimeConfigGenerationInvalidatesSnapshot(t *testing.T) {
 		oldStarted := make(chan struct{})
 		releaseOld := make(chan struct{})
 		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
-			// Count refreshes, not legs: a refresh issues one v3 request and one
-			// enterprise-endpoint request, and this test tracks refreshes.
+			// Count refreshes, not legs: a refresh asks each client shape, and
+			// this test tracks refreshes.
 			switch req.URL.Host {
 			case "copilot.tencent.com":
 				if req.URL.Path == "/console/enterprises/personal/models" {
 					return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 				}
-				if workBuddyCalls.Add(1) == 1 {
-					close(oldStarted)
+				// Both legs of a round must answer alike: the first round
+				// blocks so the test can advance the config generation while
+				// the refresh is in flight.
+				if isCatalogRefreshLeg(req) {
+					workBuddyCalls.Add(1)
+					if workBuddyCalls.Load() == 1 {
+						close(oldStarted)
+					}
+				}
+				if workBuddyCalls.Load() == 1 {
 					<-releaseOld
 					return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
 				}
@@ -986,7 +1008,10 @@ func TestModelRuntimeStaleMatrix(t *testing.T) {
 				}
 				switch {
 				case req.URL.Host == "copilot.tencent.com" && req.URL.Path == "/v3/config":
-					workBuddyCalls++
+					// Count refreshes, not legs: a refresh asks each client shape.
+					if isCatalogRefreshLeg(req) {
+						workBuddyCalls++
+					}
 					if tt.workBuddyFails {
 						return nil, errors.New(modelRuntimeRawWorkBuddyTransport)
 					}

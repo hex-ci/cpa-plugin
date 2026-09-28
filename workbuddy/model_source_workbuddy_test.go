@@ -413,20 +413,41 @@ func TestWorkBuddyRealmFromAccessTokenRejectsMalformedAndUnknownIssuers(t *testi
 }
 
 func TestFetchWorkBuddyCatalogFallsBackOnlyOn404Or405(t *testing.T) {
+	// A v3 shape that answers 404/405 is one unavailable source, not a failed
+	// refresh: the remaining sources still produce a catalogue.
 	for _, status := range []int{http.StatusNotFound, http.StatusMethodNotAllowed} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			calls := 0
-			do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
-				calls++
-				if calls == 1 {
+		t.Run(strconv.FormatInt(int64(status), 10), func(t *testing.T) {
+			t.Run("another v3 shape serves it", func(t *testing.T) {
+				calls := 0
+				do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+					calls++
+					if calls == 1 {
+						return &hostHTTPResponse{StatusCode: status, Headers: make(http.Header)}, nil
+					}
+					return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}]}}`)}, nil
+				}
+				got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, workBuddyRealmGlobal), "callback-1", do)
+				// The desktop shape 404s, the CLI shape answers, and the
+				// Global realm has no legacy endpoint to try.
+				if err != nil || calls != 2 || got.Endpoint != workBuddyEndpointV3Config {
+					t.Fatalf("catalog=%#v calls=%d err=%v", got, calls, err)
+				}
+			})
+
+			t.Run("legacy serves it when every v3 shape fails", func(t *testing.T) {
+				calls := 0
+				do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+					calls++
+					if req.URL.Path == "/console/enterprises/personal/models" {
+						return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}],"models":[{"id":"serve-alpha"}]}}`)}, nil
+					}
 					return &hostHTTPResponse{StatusCode: status, Headers: make(http.Header)}, nil
 				}
-				return &hostHTTPResponse{StatusCode: http.StatusOK, Headers: make(http.Header), Body: []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}],"models":[{"id":"serve-alpha"}]}}`)}, nil
-			}
-			got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, workBuddyRealmCN), "callback-1", do)
-			if err != nil || calls != 2 || got.Endpoint != workBuddyEndpointLegacyPersonalModels {
-				t.Fatalf("catalog=%#v calls=%d err=%v", got, calls, err)
-			}
+				got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, workBuddyRealmCN), "callback-1", do)
+				if err != nil || calls != 3 || got.Endpoint != workBuddyEndpointLegacyPersonalModels {
+					t.Fatalf("catalog=%#v calls=%d err=%v", got, calls, err)
+				}
+			})
 		})
 	}
 }
@@ -443,18 +464,21 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(string(tt.realm), func(t *testing.T) {
 			sa := syntheticStoredAuth(t, tt.realm)
-			var method, requestURL, callbackID string
+			var method, callbackID string
+			var uas []string
+			var requestURLs []string
 			var headers http.Header
 			deadlineOK := false
 			do := func(req *http.Request, gotCallbackID string) (*hostHTTPResponse, error) {
-				// The enterprise leg answers 401 (as production does for an
-				// account without entitlement), so the v3 leg alone decides the
-				// catalogue and its routing facts are what get asserted.
+				// The legacy leg answers 401 (as production does for an
+				// account without entitlement), so the v3 legs alone decide the
+				// catalogue and their routing facts are what get asserted.
 				if req.URL.Path == "/console/enterprises/personal/models" {
 					return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 				}
 				method = req.Method
-				requestURL = req.URL.String()
+				requestURLs = append(requestURLs, req.URL.String())
+				uas = append(uas, req.Header.Get("User-Agent"))
 				callbackID = gotCallbackID
 				headers = req.Header.Clone()
 				if deadline, ok := req.Context().Deadline(); ok {
@@ -472,11 +496,16 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Realm != tt.realm || got.Endpoint != workBuddyEndpointV3Config || len(got.Models) != 1 || got.Models[0].ID != "serve-alpha" {
+			if got.Realm != tt.realm || got.Endpoint != workBuddyEndpointV3ConfigShapes || len(got.Models) != 1 || got.Models[0].ID != "serve-alpha" {
 				t.Fatalf("catalog = %#v", got)
 			}
-			if method != http.MethodGet || requestURL != tt.base+"/v3/config" {
-				t.Fatalf("request = %s %s", method, requestURL)
+			if method != http.MethodGet || len(requestURLs) != 2 || requestURLs[0] != tt.base+"/v3/config" || requestURLs[1] != tt.base+"/v3/config" {
+				t.Fatalf("requests = %s %v, want two GETs to %s/v3/config", method, requestURLs, tt.base)
+			}
+			// The catalogue is UA-scoped, so the two legs must differ in
+			// exactly the User-Agent: desktop shape first, CLI shape second.
+			if len(uas) != 2 || uas[0] != catalogUA || uas[1] != clientUA {
+				t.Fatalf("user agents = %#v, want [%q %q]", uas, catalogUA, clientUA)
 			}
 			if callbackID != "callback-route" {
 				t.Fatalf("callback ID = %q", callbackID)
@@ -492,6 +521,7 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 				"User-Agent":      clientUA,
 				"X-User-Id":       "uid-1",
 				"X-Enterprise-Id": "enterprise-1",
+				"X-Tenant-Id":     "enterprise-1",
 				"X-Product":       "SaaS",
 				"X-IDE-Type":      "CLI",
 				"X-IDE-Name":      "CLI",
@@ -508,50 +538,72 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 }
 
 func TestFetchWorkBuddyCatalogLegacyRequestPreservesRealmRouting(t *testing.T) {
-	tests := []struct {
-		realm  workBuddyRealm
-		base   string
-		origin string
-	}{
-		{realm: workBuddyRealmCN, base: upstreamBaseCN, origin: originReferer},
-		{realm: workBuddyRealmGlobal, base: upstreamBaseGlobal, origin: originRefererGlobal},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.realm), func(t *testing.T) {
-			var urls, callbacks []string
-			var legacyHeaders http.Header
-			do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
-				urls = append(urls, req.URL.String())
-				callbacks = append(callbacks, callbackID)
-				if len(urls) == 1 {
-					return &hostHTTPResponse{StatusCode: http.StatusNotFound, Headers: make(http.Header)}, nil
-				}
-				legacyHeaders = req.Header.Clone()
-				return &hostHTTPResponse{
-					StatusCode: http.StatusOK,
-					Headers:    make(http.Header),
-					Body:       []byte(`{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}],"models":[{"id":"serve-alpha"}]}}`),
-				}, nil
-			}
+	const legacyBody = `{"code":0,"data":{"agents":[{"name":"cli","models":["serve-alpha"]}],"models":[{"id":"serve-alpha"}]}}`
 
-			got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, tt.realm), "callback-legacy", do)
-			if err != nil {
-				t.Fatal(err)
+	t.Run(string(workBuddyRealmCN), func(t *testing.T) {
+		var urls, callbacks []string
+		var legacyHeaders http.Header
+		do := func(req *http.Request, callbackID string) (*hostHTTPResponse, error) {
+			urls = append(urls, req.URL.String())
+			callbacks = append(callbacks, callbackID)
+			if req.URL.Path != "/console/enterprises/personal/models" {
+				return &hostHTTPResponse{StatusCode: http.StatusNotFound, Headers: make(http.Header)}, nil
 			}
-			if got.Endpoint != workBuddyEndpointLegacyPersonalModels || len(urls) != 2 {
-				t.Fatalf("catalog = %#v, URLs = %#v", got, urls)
+			legacyHeaders = req.Header.Clone()
+			return &hostHTTPResponse{
+				StatusCode: http.StatusOK,
+				Headers:    make(http.Header),
+				Body:       []byte(legacyBody),
+			}, nil
+		}
+
+		got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, workBuddyRealmCN), "callback-legacy", do)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Endpoint != workBuddyEndpointLegacyPersonalModels || len(urls) != 3 {
+			t.Fatalf("catalog = %#v, URLs = %#v", got, urls)
+		}
+		if urls[0] != upstreamBaseCN+"/v3/config" || urls[1] != upstreamBaseCN+"/v3/config" || urls[2] != upstreamBaseCN+"/console/enterprises/personal/models" {
+			t.Fatalf("URLs = %#v", urls)
+		}
+		for i, id := range callbacks {
+			if id != "callback-legacy" {
+				t.Fatalf("callback IDs = %#v (entry %d)", callbacks, i)
 			}
-			if urls[0] != tt.base+"/v3/config" || urls[1] != tt.base+"/console/enterprises/personal/models" {
-				t.Fatalf("URLs = %#v", urls)
-			}
-			if callbacks[0] != "callback-legacy" || callbacks[1] != "callback-legacy" {
-				t.Fatalf("callback IDs = %#v", callbacks)
-			}
-			if legacyHeaders.Get("Accept") != "application/json" || legacyHeaders.Get("Origin") != tt.origin || legacyHeaders.Get("Referer") != tt.origin+"/" {
-				t.Fatalf("legacy headers = %#v", legacyHeaders)
-			}
-		})
-	}
+		}
+		if legacyHeaders.Get("Accept") != "application/json" || legacyHeaders.Get("Origin") != originReferer || legacyHeaders.Get("Referer") != originReferer+"/" {
+			t.Fatalf("legacy headers = %#v", legacyHeaders)
+		}
+		if legacyHeaders.Get("User-Agent") != clientUA {
+			t.Fatalf("legacy request UA = %q, want the CLI identity", legacyHeaders.Get("User-Agent"))
+		}
+	})
+
+	// The legacy route answers 500 on the Global deployment (measured
+	// 2026-09-28), so the Global realm must not spend a request on it.
+	t.Run(string(workBuddyRealmGlobal), func(t *testing.T) {
+		var urls []string
+		do := func(req *http.Request, _ string) (*hostHTTPResponse, error) {
+			urls = append(urls, req.URL.String())
+			return &hostHTTPResponse{
+				StatusCode: http.StatusOK,
+				Headers:    make(http.Header),
+				Body:       []byte(legacyBody),
+			}, nil
+		}
+
+		got, err := fetchWorkBuddyCatalog(syntheticStoredAuth(t, workBuddyRealmGlobal), "callback-legacy", do)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Endpoint != workBuddyEndpointV3ConfigShapes {
+			t.Fatalf("endpoint = %q, want the merged v3 shapes", got.Endpoint)
+		}
+		if len(urls) != 2 || urls[0] != upstreamBaseGlobal+"/v3/config" || urls[1] != upstreamBaseGlobal+"/v3/config" {
+			t.Fatalf("URLs = %#v, want the v3 config requests only", urls)
+		}
+	})
 }
 
 func TestFetchWorkBuddyCatalogDoesNotFallbackOnOtherFailures(t *testing.T) {
@@ -622,10 +674,11 @@ func TestFetchWorkBuddyCatalogDoesNotFallbackOnOtherFailures(t *testing.T) {
 			if err == nil {
 				t.Fatalf("catalog = %#v, want error", got)
 			}
-			// Both legs are always requested, so a failing catalogue makes two
-			// attempts; the reported error is the primary leg's.
-			if calls != 2 {
-				t.Fatalf("calls = %d, want 2", calls)
+			// Every source is requested, so a failing catalogue makes three
+			// attempts on CN (both v3 client shapes plus the legacy endpoint);
+			// the reported error is the first failing source's.
+			if calls != 3 {
+				t.Fatalf("calls = %d, want 3", calls)
 			}
 			if err.Error() != tt.wantError {
 				t.Fatalf("error = %q, want %q", err, tt.wantError)

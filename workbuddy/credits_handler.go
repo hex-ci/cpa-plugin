@@ -1,6 +1,6 @@
 // credits_handler.go implements the management API endpoints that mutate or
-// read account state: import credential, toggle check-in, claim trial, select
-// active auth, and query credits for one account or all.
+// read account state: import credential, toggle check-in, select active auth,
+// and query credits for one account or all.
 package main
 
 import (
@@ -99,58 +99,6 @@ func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
 	return map[string]any{"checkin_auto": cur, "persistent": false}
 }
 
-// handleClaimTrialWithCallback claims the expert trial pack for one Global
-// account. CN accounts are rejected — the trial endpoint is Global-only.
-func handleClaimTrialWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
-	var body struct {
-		AuthIndex string `json:"auth_index"`
-	}
-	_ = json.Unmarshal(req.Body, &body)
-	authIndex := strings.TrimSpace(body.AuthIndex)
-	if authIndex == "" {
-		return map[string]any{"error": "auth_index is required"}
-	}
-	files, err := hostAuthList()
-	if err != nil {
-		return map[string]any{"error": err.Error()}
-	}
-	for _, f := range files {
-		if f.AuthIndex != authIndex {
-			continue
-		}
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			return map[string]any{"auth_index": authIndex, "error": err.Error()}
-		}
-		if !isGlobalDomain(sa.Auth.Domain) {
-			return map[string]any{"auth_index": authIndex, "error": "专家加油包仅适用于国际版账号"}
-		}
-		res, err := performTrialCallWithCallback(sa, callbackID)
-		out := map[string]any{"auth_index": authIndex, "nickname": displayNameFor(sa)}
-		if err != nil {
-			out["error"] = err.Error()
-		} else {
-			for k, v := range res {
-				out[k] = v
-			}
-		}
-		// Invalidate credits cache (copy entry, set credits=nil, keep plan/checkin).
-		if v, ok := accountCache.Load(f.ID); ok {
-			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				fresh := *e
-				fresh.credits = nil
-				fresh.fetched = time.Now()
-				accountCache.Store(f.ID, &fresh)
-			}
-		}
-		if lifecycleEnabled() {
-			_, _ = reconcileOneAccountWithCallback(authIndex, f.ID, true, callbackID)
-		}
-		return out
-	}
-	return map[string]any{"error": "account not found"}
-}
-
 // handleSelectAuth sets the panel-selected account used for chat routing.
 // Region (CN/Global) is read from that account's stored domain on each request.
 func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
@@ -192,7 +140,7 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 // handleCreditsQueryWithCallback returns real-time credits for one or all
 // accounts. Pass ?auth_index=<idx> to query a single account; omit for all.
 // Single-account mode returns full account info (nickname, region, credits,
-// exhausted, trial_claimed) so the panel can update one card without
+// exhausted) so the panel can update one card without
 // reloading the entire dashboard.
 func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID string) map[string]any {
 	authIndex := ""
@@ -232,9 +180,6 @@ func handleCreditsQueryWithCallback(req pluginapi.ManagementRequest, callbackID 
 			} else {
 				acct["credits"] = cr
 				acct["exhausted"] = isCreditsExhausted(cr)
-				if isGlobalDomain(sa.Auth.Domain) {
-					acct["trial_claimed"] = hasTrialPack(cr)
-				}
 				// Also fetch plan so the badge updates on lazy load.
 				acct["plan"] = fetchPaymentTypeWithCallback(sa, callbackID)
 				// Update cache so subsequent dashboard loads see fresh data.

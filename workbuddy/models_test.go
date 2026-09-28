@@ -89,14 +89,15 @@ func TestModelForAuthReturnsResponseLocalReadyAndStaleModels(t *testing.T) {
 				if gotCallbackID != callbackID {
 					t.Fatalf("callback ID = %q, want %q", gotCallbackID, callbackID)
 				}
-				// Count refreshes, not legs: a refresh issues one v3 request and
-				// one enterprise-endpoint request.
+				// Count refreshes, not legs: a refresh asks each client shape.
 				switch req.URL.Host {
 				case "copilot.tencent.com":
 					if req.URL.Path == "/console/enterprises/personal/models" {
 						return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 					}
-					workBuddyCalls++
+					if isCatalogRefreshLeg(req) {
+						workBuddyCalls++
+					}
 					if tt.stale {
 						return nil, errors.New("synthetic WorkBuddy outage")
 					}
@@ -200,8 +201,10 @@ func TestModelForAuthFailedAndNotStartedReturnEmptySuccess(t *testing.T) {
 				return &hostHTTPResponse{StatusCode: http.StatusUnauthorized, Headers: make(http.Header), Body: []byte("401")}, nil
 			}
 			// Count refreshes, not legs.
-			calls++
-			runtime.advanceConfigGeneration()
+			if isCatalogRefreshLeg(req) {
+				calls++
+				runtime.advanceConfigGeneration()
+			}
 			return modelRuntimeFreshWorkBuddyResponse(), nil
 		})
 		oldRuntime := activeModelRuntime.Swap(runtime)

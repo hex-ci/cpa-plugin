@@ -303,6 +303,12 @@ var (
 	// scores soft_rate, the truncated one scores server. The short code
 	// survives truncation because it sits near the head.
 	upstreamBusyCodeRe = upstreamBizCodeRe(upstreamBusyCode)
+	// capacityQueueCodeRe matches the capacity-queue codes the upstream emits
+	// when a model has no free slot. The client treats them as a waiting
+	// state, not a failure: it polls /v2/chat/queue/status and resends the
+	// same request once the slot frees. They therefore belong to the
+	// throttling class — the credential and the account are healthy.
+	capacityQueueCodeRe = regexp.MustCompile(`"code"\s*:\s*"?602[012]\b`)
 )
 
 // modelRateLimitCode is the business code for "this model hit its usage cap",
@@ -416,7 +422,9 @@ func isPromptTooLong(status int, body string) bool {
 //  3. model rate limit (6004) — an explicit, structured model-level signal, so
 //     it outranks the loose wording checks below. The account is healthy.
 //  4. 11134 — same throttling semantics as 6004 but arriving as a 500 whose
-//     explanatory text sits at the tail (see upstreamBusyCodeRe).
+//     explanatory text sits at the tail (see upstreamBusyCodeRe). The
+//     capacity-queue codes (6020/6021/6022) are the same story: an upstream
+//     state, matched by code so a truncated body still classifies.
 //  5. bare 429 — BEFORE the credit wording, deliberately. Upstream attaches
 //     quota/credit phrasing to throttling bodies, so wording alone would park
 //     a healthy account in a hard cooldown for a condition that clears itself;
@@ -455,6 +463,9 @@ func classifyUpstreamError(status int, body string) upstreamErrKind {
 		return upstreamErrPromptTooLong
 	}
 	if upstreamBusyCodeRe.MatchString(body) {
+		return upstreamErrSoftRate
+	}
+	if capacityQueueCodeRe.MatchString(body) {
 		return upstreamErrSoftRate
 	}
 	// 402 before the wording probes: "payment required" is unambiguous, and a

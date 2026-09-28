@@ -88,8 +88,13 @@ const (
 	upstreamBaseCN = "https://copilot.tencent.com"
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
 	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
-	upstreamBaseGlobal  = "https://www.workbuddy.ai"
-	clientUA            = "CLI/2.63.2 CodeBuddy/2.63.2"
+	upstreamBaseGlobal = "https://www.workbuddy.ai"
+	clientUA           = "CLI/2.63.2 CodeBuddy/2.63.2"
+	// catalogUA is the User-Agent for the catalogue request. /v3/config
+	// branches on it: only a UA carrying the "WorkBuddy/" product segment is
+	// answered with the desktop-shaped payload (the version inside the segment
+	// is ignored). The desktop client sends exactly this string.
+	catalogUA           = "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/2.147.0"
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
@@ -574,6 +579,10 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	}
 	if sa.Account.EnterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", sa.Account.EnterpriseID)
+		// The client's auth header builder always sends X-Tenant-Id alongside
+		// X-Enterprise-Id (same value); enterprise calls that omit it are the
+		// ones the upstream rejects.
+		req.Header.Set("X-Tenant-Id", sa.Account.EnterpriseID)
 	} else {
 		req.Header.Set("X-No-Enterprise-Id", "1")
 	}

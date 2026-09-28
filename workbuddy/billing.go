@@ -1,6 +1,6 @@
 // billing.go owns the upstream billing API surface: check-in status, user
 // resource (credits / packages), payment type, and the perform-* call wrappers
-// for daily check-in and trial claim. Includes the shared JSON helpers used
+// for daily check-in. Includes the shared JSON helpers used
 // to tolerate the upstream's loosely-typed response shapes, and the region
 // helpers that decide CN vs Global endpoint.
 package main
@@ -583,69 +583,6 @@ func performCheckinCallWithCallback(sa *storedAuth, callbackID string) (map[stri
 	// (P1-2 logic bug: type mismatch on success field).
 	m["success"] = true
 	return m, nil
-}
-
-// performTrialCall claims the one-time expert trial pack for a Global account.
-// Endpoint: POST /billing/ide/trial (note: NOT under /v2/billing/meter/).
-// First call: success, +250 credits, 14-day "CodeBuddy One-time Free 2-Week
-// Pro Plan Trial".
-// Repeat call: code=14051 "has applied trial" — surfaced as already_claimed.
-func performTrialCall(sa *storedAuth) (map[string]any, error) {
-	return performTrialCallWithCallback(sa, "")
-}
-
-func performTrialCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
-	data, err := billingCallWithCallback(sa, "/billing/ide/trial", nil, callbackID)
-	if err != nil {
-		msg := err.Error()
-		// code=14051 means the trial has already been claimed — not a real error.
-		if strings.Contains(msg, "14051") {
-			return map[string]any{
-				"success":         false,
-				"message":         "已领取过专家加油包",
-				"already_claimed": true,
-			}, nil
-		}
-		return map[string]any{"success": false, "message": msg}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	m["success"] = true
-	return m, nil
-}
-
-// hasTrialPack reports whether the credits summary already contains the
-// Global expert trial pack (one-time, 14-day, 250 credits). Used for the
-// panel "claim trial" button state (trial_claimed).
-//
-// Do NOT match bare Chinese "体验": CN free-tier is literally named
-// "CodeBuddy个人体验版" / "体验版" and must remain unclaimed-looking for Global
-// trial UI (A-18). Prefer English trial markers from live Global packs.
-func hasTrialPack(cr *creditsSummary) bool {
-	if cr == nil {
-		return false
-	}
-	for _, p := range cr.Packages {
-		name := strings.ToLower(strings.TrimSpace(p.Name))
-		if name == "" {
-			continue
-		}
-		// Live Global: "CodeBuddy One-time Free 2-Week Pro Plan Trial"
-		if strings.Contains(name, "trial") {
-			return true
-		}
-		// Alternate English shapes (keep without bare "体验")
-		if strings.Contains(name, "pro plan") && (strings.Contains(name, "free") || strings.Contains(name, "one-time") || strings.Contains(name, "2-week") || strings.Contains(name, "2 week")) {
-			return true
-		}
-		// Explicit expert-pack Chinese labels only — never bare 体验/体验版.
-		if strings.Contains(name, "专家加油") || strings.Contains(name, "专家体验包") {
-			return true
-		}
-	}
-	return false
 }
 
 // isCreditsExhausted is the shared "耗尽" definition for panel + scheduler.

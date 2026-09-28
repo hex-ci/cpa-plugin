@@ -1,7 +1,7 @@
 // checkin.go implements daily check-in for CN accounts: the manual
 // handleManualCheckinWithCallback endpoint, the 09:00 / 21:00 auto scheduler, and the
 // per-account mutex that prevents duplicate check-ins from racing browser
-// tabs. Global accounts are excluded — they use one-shot trial claims instead.
+// tabs. Global accounts are excluded — growth and check-in are CN features.
 package main
 
 import (
@@ -104,7 +104,7 @@ func schedulerLoop(stop chan struct{}) {
 
 // runAutoCheckin is the scheduled lifecycle tick (09:00 / 21:00).
 // CN: optional daily check-in, then reconcile (disable exhausted / reenable after credits).
-// Global: no auto trial (one-shot claim is manual only); reconcile may delete exhausted auths.
+// Global: reconcile may delete exhausted auths.
 //
 // v0.6.31: per-account work runs concurrently (sem=4) — was serial, so N accounts
 // meant 3N serial HTTP round-trips on the billing API. Matches the pattern used
@@ -147,7 +147,7 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 			return
 		}
 		if isGlobalDomain(sa.Auth.Domain) {
-			// Global: never check-in or auto-claim trial. Lifecycle only.
+			// Global: never check-in. Lifecycle only.
 			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
 			if v, ok := accountCache.Load(f.ID); ok {
 				if e, ok2 := v.(*accountCacheEntry); ok2 {

@@ -35,8 +35,6 @@ built-in management dashboard.
 - **Daily check-in** — CN accounts are checked in at 09:00 and 21:00 local
   time (configurable). Manual "check in all" from the panel. Per-account
   mutex prevents duplicate claims from racing browser tabs.
-- **Trial claim** — Global accounts can claim the one-time 250-credit expert
-  trial pack from the panel.
 - **Dashboard** — embedded panel at `/v0/resource/plugins/workbuddy/panel`
   with credits progress bars, plan badges, exhausted/disabled flags, region
   filter, and credential import.
@@ -162,7 +160,7 @@ Model aliases and exclusions are handled natively by CPA's
 `oauth-model-alias` and `oauth-excluded-models` config — no plugin-side
 duplication needed.
 
-When `proxy-url` is set, chat, billing/check-in/trial, token refresh,
+When `proxy-url` is set, chat, billing/check-in, token refresh,
 `executor.http_request`, usage forwarding, OAuth state/token/account calls,
 and usage endpoint probes all use that proxy. Because CLIProxyAPI v7.2.30's
 native-plugin host HTTP API has no per-request proxy override, explicit plugin
