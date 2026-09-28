@@ -512,3 +512,29 @@ test("progressHTML distinguishes unloaded disabled accounts from pending loads",
   assert.doesNotMatch(disabled, /class="spin"/);
   assert.match(disabled, /<span>-<\/span>/);
 });
+
+// The catalogue state rides the DOM as a class on #modelStatus (.model-status
+// loading). A bare `.loading{...}` rule elsewhere in the sheet then restyles the
+// status bar itself — it used to inherit the grid placeholder's 40px padding and
+// render 103px tall instead of one line.
+test("panel CSS keeps model-status state classes free of layout collisions", () => {
+  const html = fs.readFileSync(path.join(__dirname, "panel.html"), "utf8");
+  const states = new Set([...html.matchAll(/\.model-status\.([a-z_]+)/g)].map((m) => m[1]));
+  assert.ok(states.has("loading"), "the loading state class should be styled");
+
+  const sheet = html.match(/<style[^>]*>([\s\S]*?)<\/style>/)[1];
+  const bare = new Set();
+  for (const rule of sheet.split("}")) {
+    const selector = rule.split("{")[0];
+    if (!selector) continue;
+    for (const part of selector.split(",")) {
+      const sel = part.trim();
+      if (/^\.[a-zA-Z_-][\w-]*$/.test(sel)) bare.add(sel.slice(1));
+    }
+  }
+  for (const state of states) {
+    assert.ok(!bare.has(state), `bare .${state} rule collides with the status bar state class`);
+  }
+  assert.doesNotMatch(html, /class="loading"/, "placeholders must not reuse a state class name");
+  assert.match(html, /class="grid-hint"/);
+});

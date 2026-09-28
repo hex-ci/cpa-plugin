@@ -120,7 +120,10 @@ button.done:disabled{opacity:1}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 button .spin{border-color:var(--on-acc);border-top-color:transparent}
-.loading{color:var(--mut);text-align:center;padding:40px}
+/* 网格占位文案（账号列表为空/加载/出错时）。类名刻意不叫 loading：模型目录状态
+   也用 loading 作为状态名（.model-status loading），裸 .loading 规则会把提示条
+   撑成 40px 内边距的占位块。 */
+.grid-hint{color:var(--mut);text-align:center;padding:40px}
 .footer{margin-top:18px;text-align:center;color:var(--mut);font-size:12px}
 .footer strong{color:var(--fg);font-weight:600}
 .modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
@@ -214,7 +217,7 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
     <button type="button" class="ftag" id="remainSort" onclick="cycleRemainSort(this)">剩余积分：原始顺序</button>
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
-  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <div id="grid" class="grid"><div class="grid-hint">加载中…</div></div>
   <footer class="footer">当前出口 IP：<strong id="egressIp" role="status">检测中…</strong></footer>
 </div>
 <div class="modal-mask" id="importModal" onclick="onImportMaskClick(event)">
@@ -741,7 +744,7 @@ async function load(force, btn){
   const g=document.getElementById("grid");
   if(!getKey()){
     showAuth();
-    g.innerHTML='<div class="loading">请先填写 management key</div>';
+    g.innerHTML='<div class="grid-hint">请先填写 management key</div>';
     return false;
   }
   // 刷新按钮：loading 态 + 右上角 toast。原先 force 路径静默调 /refresh，
@@ -761,7 +764,7 @@ async function load(force, btn){
     document.getElementById("autoToggle").checked=!!d.checkin_auto;
     document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
     if(d.error){
-      g.innerHTML='<div class="loading">请求失败</div>';
+      g.innerHTML='<div class="grid-hint">请求失败</div>';
       if(force) toast("刷新失败", "err", "请求失败");
       return true;
     }
@@ -770,7 +773,7 @@ async function load(force, btn){
     activeAuthId=d.active_auth||"";
     updateFilterCounts(accounts);
     if(!accounts.length){
-      g.innerHTML='<div class="loading">暂无 WorkBuddy 账号</div>';
+      g.innerHTML='<div class="grid-hint">暂无 WorkBuddy 账号</div>';
       renderSummary([]);
       if(force) toast("数据已刷新", "warn", "暂无 WorkBuddy 账号");
       return true;
@@ -793,7 +796,7 @@ async function load(force, btn){
     if(force) toast("刷新失败", "err", e.message||String(e));
     // 强制刷新失败时保留旧卡片，只 toast；首次加载仍写错误到 grid。
     if(!force || !g.querySelector(".card")){
-      g.innerHTML='<div class="loading">'+esc(e.message||String(e))+"</div>";
+      g.innerHTML='<div class="grid-hint">'+esc(e.message||String(e))+"</div>";
     }
     return false;
   }finally{
