@@ -7,6 +7,7 @@
 | `workbuddy/` | `workbuddy` | Tencent CodeBuddy OAuth provider（CN + Global） |
 | `qoderwork/` | `qoderwork` | QoderWork CN provider |
 | `qwenwork/` | `qwenwork` | QwenWork CN provider |
+| `traework/` | `traework` | TraeWork CN（trae.cn）provider |
 
 ## 开发命令
 
@@ -43,8 +44,8 @@ make -C qwenwork tag           # → qwenwork-v0.1.5
 - 只想重发已有版本（不建新 tag）：用 workflow_dispatch，填 `plugin` + `version`；version 留空则取该插件的 `VERSION` 文件。
 - 每插件独立版本，版本号存于 `<id>/VERSION`（tag 名由它派生，`make tag` 已自动读取）。
 - `registry.json`（插件商店源）用 `python3 scripts/validate-registry.py registry.json` 校验。
-- CI 的 test/build matrix 覆盖 **WorkBuddy + QoderWork + QwenWork** 三个插件（WorkBuddy 额外跑 `node --test panel.test.js`）。
-- 三插件共用同一仓库，插件商店无法用 `github-release` 类型：宿主按 `/releases/latest`（全仓库语义）解析，且 tag 必须能归一为纯版本号，`<id>-vX.Y.Z` 解析失败。因此 registry 走 `direct`（schema_version 2），artifacts 由 release job 的 `.github/scripts/sync-registry.py` 自动生成并 commit 回 main。
+- CI 的 test/build matrix 覆盖 **WorkBuddy + QoderWork + QwenWork + TraeWork** 四个插件（WorkBuddy 与 TraeWork 额外跑 `node --test panel.test.js`）。
+- 四个插件共用同一仓库，插件商店无法用 `github-release` 类型：宿主按 `/releases/latest`（全仓库语义）解析，且 tag 必须能归一为纯版本号，`<id>-vX.Y.Z` 解析失败。因此 registry 走 `direct`（schema_version 2），artifacts 由 release job 的 `.github/scripts/sync-registry.py` 自动生成并 commit 回 main。
 
 ## 约定
 

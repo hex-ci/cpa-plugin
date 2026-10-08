@@ -1,4 +1,4 @@
-# Multi-arch CPA plugin build & release (WorkBuddy + QoderWork + QwenWork).
+# Multi-arch CPA plugin build & release (WorkBuddy + QoderWork + QwenWork + TraeWork).
 # Each plugin versions INDEPENDENTLY:
 #   - tag '<id>-v*'       → release that plugin at that version
 #   - workflow_dispatch   → pick plugin + version manually
@@ -18,14 +18,14 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["workbuddy-v*", "qoderwork-v*", "qwenwork-v*"]
+    tags: ["workbuddy-v*", "qoderwork-v*", "qwenwork-v*", "traework-v*"]
   workflow_dispatch:
     inputs:
       plugin:
         description: "Plugin to release"
         required: true
         type: choice
-        options: [workbuddy, qoderwork, qwenwork]
+        options: [workbuddy, qoderwork, qwenwork, traework]
       version:
         description: "Version without v (empty = plugin's VERSION file)"
         required: false
@@ -48,6 +48,8 @@ jobs:
             node: false
           - dir: qwenwork
             node: false
+          - dir: traework
+            node: true
     defaults:
       run:
         working-directory: ${{ matrix.dir }}
@@ -158,6 +160,32 @@ jobs:
             goarch: amd64
             runner: windows-2025
             ext: dll
+          # TraeWork native
+          - id: traework
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-24.04
+            ext: so
+          - id: traework
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+            ext: so
+          - id: traework
+            goos: darwin
+            goarch: amd64
+            runner: macos-15-intel
+            ext: dylib
+          - id: traework
+            goos: darwin
+            goarch: arm64
+            runner: macos-15
+            ext: dylib
+          - id: traework
+            goos: windows
+            goarch: amd64
+            runner: windows-2025
+            ext: dll
     defaults:
       run:
         shell: bash
@@ -258,6 +286,12 @@ jobs:
             target: windows-arm64
             ext: dll
           - id: qwenwork
+            target: freebsd-amd64
+            ext: so
+          - id: traework
+            target: windows-arm64
+            ext: dll
+          - id: traework
             target: freebsd-amd64
             ext: so
     defaults:
@@ -381,7 +415,8 @@ jobs:
       (github.event_name == 'workflow_dispatch' && github.event.inputs.version != '') ||
       startsWith(github.ref, 'refs/tags/workbuddy-v') ||
       startsWith(github.ref, 'refs/tags/qoderwork-v') ||
-      startsWith(github.ref, 'refs/tags/qwenwork-v')
+      startsWith(github.ref, 'refs/tags/qwenwork-v') ||
+      startsWith(github.ref, 'refs/tags/traework-v')
     needs:
       - build
       - build-cross
@@ -404,11 +439,13 @@ jobs:
             P="workbuddy"; V="${GITHUB_REF_NAME#workbuddy-v}"
           elif [[ "${GITHUB_REF_NAME}" == qwenwork-v* ]]; then
             P="qwenwork"; V="${GITHUB_REF_NAME#qwenwork-v}"
+          elif [[ "${GITHUB_REF_NAME}" == traework-v* ]]; then
+            P="traework"; V="${GITHUB_REF_NAME#traework-v}"
           else
             P="qoderwork"; V="${GITHUB_REF_NAME#qoderwork-v}"
           fi
           case "$P" in
-            workbuddy|qoderwork|qwenwork) ;;
+            workbuddy|qoderwork|qwenwork|traework) ;;
             *) echo "unsupported plugin $P"; exit 1 ;;
           esac
           V="${V#v}"
@@ -417,6 +454,7 @@ jobs:
             workbuddy) NAME="WorkBuddy" ;;
             qoderwork) NAME="QoderWork" ;;
             qwenwork)  NAME="QwenWork" ;;
+            traework)  NAME="TraeWork" ;;
           esac
           {
             echo "plugin=$P"

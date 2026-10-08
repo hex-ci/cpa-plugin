@@ -215,6 +215,23 @@
           }
         ]
       }
+    },
+    {
+      "id": "traework",
+      "name": "TraeWork",
+      "description": "TraeWork CN (trae.cn) provider for CLIProxyAPI: browser OAuth login (PKCE with a loopback callback) and device-proof token refresh, the account's model catalogue, and a streaming chat executor for the solo_work_lite channel with tool-call passthrough, plus an account panel.",
+      "author": "Hex",
+      "version": "0.1.0",
+      "repository": "https://github.com/hex-ci/cpa-plugin",
+      "logo": "https://raw.githubusercontent.com/hex-ci/cpa-plugin/main/traework/assets/traework.png",
+      "homepage": "https://github.com/hex-ci/cpa-plugin/tree/main/traework",
+      "license": "MIT",
+      "tags": [
+        "Provider",
+        "OAuth",
+        "TraeWork",
+        "Management"
+      ]
     }
   ]
 }
