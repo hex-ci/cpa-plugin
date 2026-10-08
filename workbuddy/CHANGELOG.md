@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.2
+
+### 修复
+
+- **未配置 usage 上报时不再探测 CPAMP 的 `/v0/management/usage/import`**：usage 上报 URL 为空
+  （或只有 key 没有 URL）时插件仍会发起探测请求；宿主对空管理密钥按失败计数，连点几次就把这个 IP
+  封 30 分钟，表现为「面板/网关突然全部 401」。现在 URL 为空直接不做任何请求。
+- **去掉硬编码的本机端口**：探测默认值改用官方默认端口 `8317`，README 示例里的主机名与端口
+  也改成占位符。公开代码不再带任何本机私有端口值。
+
+### 其它
+
+- 版本号 0.12.1 → 0.12.2。
+
 ## 0.12.1
 
 ### 修复
@@ -629,7 +643,7 @@
 ## 0.6.23
 
 ### Fixed
-- usage import URL 自动探测：先试 127.0.0.1:18317（裸机/Docker host），再试 Docker 服务名 cpa-manager-plus:18317
+- usage import URL 自动探测：先试 127.0.0.1:8317（裸机/Docker host），再试 Docker 服务名 cpa-manager-plus:8317
   不再写死 Docker 服务名，裸机安装也能自动找到 CPAMP
 
 ## 0.6.22

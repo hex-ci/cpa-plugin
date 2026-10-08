@@ -146,7 +146,7 @@ plugins:
       # CPAMP usage forwarding. Both must be set for any record to be sent.
       # Falls back to USAGE_REPORT_URL / USAGE_REPORT_KEY /
       # CPAMP_ADMIN_KEY env vars or docker secret files when unset here.
-      usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
+      usage_report_url: "http://<your CPAMP host>:<port>/v0/management/usage/import"
       usage_report_key: ""
 
       # Plugin-layer management auth. When set, all mutating endpoints under

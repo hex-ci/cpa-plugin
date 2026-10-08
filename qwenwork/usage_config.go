@@ -9,11 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,7 +27,7 @@ var (
 	//  2) env USAGE_REPORT_URL / USAGE_REPORT_KEY / CPAMP_ADMIN_KEY
 	//  3) secret files (docker secrets / bind-mount), e.g. /run/secrets/cpamp_admin_key
 	// Default URL targets the compose service name of CPA-Manager-Plus.
-	usageReportURL = defaultUsageReportURL
+	usageReportURL = "" // resolved by resolveUsageReport; empty disables reporting
 	usageReportKey = ""
 	usageReportMu  sync.RWMutex
 
@@ -42,16 +40,6 @@ var (
 	managementAPIKey   = ""
 	managementAPIKeyMu sync.RWMutex
 )
-
-// Default URL tries localhost first (works for both bare-metal and Docker
-// host-network), falls back to Docker compose service name. The probe runs
-// once at configure() time; a reachable endpoint wins.
-//
-// For users who run CPA Manager Plus on a different host/port, set
-// usage_report_url in plugin config or env USAGE_REPORT_URL.
-const defaultUsageReportURL = "http://127.0.0.1:8317/v0/management/usage/import"
-
-const fallbackUsageReportURL = "http://cpa-manager-plus:8317/v0/management/usage/import"
 
 // configure decodes plugin config from the lifecycle request. Invalid config
 // fails closed: the plugin keeps its previous settings and the error surfaces
@@ -249,9 +237,6 @@ func resolveUsageReport(cfgURL, cfgKey string) {
 		strings.TrimSpace(os.Getenv("USAGE_REPORT_URL")),
 		strings.TrimSpace(os.Getenv("CPAMP_USAGE_IMPORT_URL")),
 	)
-	if url == "" {
-		url = probeUsageReportURL()
-	}
 	key := firstNonEmpty(
 		strings.TrimSpace(cfgKey),
 		strings.TrimSpace(os.Getenv("USAGE_REPORT_KEY")),
@@ -267,35 +252,18 @@ func resolveUsageReport(cfgURL, cfgKey string) {
 		readSecretFile("/CLIProxyAPI/secrets/cpamp-admin-key"),
 		readSecretFile("/CLIProxyAPI/secrets/cpamp_admin_key"),
 	)
+	if url == "" || key == "" {
+		// Reporting stays off unless both are configured: an unauthenticated
+		// import is rejected by the receiving side anyway, and probing candidate
+		// ports would fire keyless requests at whatever listens there — on a
+		// bare-metal CPA that is the CPA's own management API, where rejected
+		// attempts ban the caller's IP after five tries.
+		url, key = "", ""
+	}
 	usageReportMu.Lock()
 	usageReportURL = url
 	usageReportKey = key
 	usageReportMu.Unlock()
-}
-
-// probeUsageReportURL tries localhost first (bare-metal + Docker host-network),
-// then Docker compose service name. Returns whichever responds; defaults to
-// localhost if both fail (better to try localhost than an unreachable hostname).
-func probeUsageReportURL() string {
-	for _, candidate := range []string{defaultUsageReportURL, fallbackUsageReportURL} {
-		if probeURL(candidate, 2*time.Second) {
-			return candidate
-		}
-	}
-	return defaultUsageReportURL
-}
-
-// probeURL does a quick HEAD/GET to check if the endpoint is reachable.
-func probeURL(target string, timeout time.Duration) bool {
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get(target)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	// Any HTTP response (even 401) means the endpoint is reachable;
-	// connection refused / DNS failure means not reachable.
-	return resp.StatusCode > 0
 }
 
 func readSecretFile(path string) string {

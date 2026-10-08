@@ -380,62 +380,6 @@ func TestOAuthClientsKeepProxySnapshotAndIsolatedCookies(t *testing.T) {
 	}
 }
 
-func TestUsageProbeObeysInheritedExplicitAndBlockedRouting(t *testing.T) {
-	old := currentProxyState()
-	t.Cleanup(func() { proxyState.Store(old) })
-
-	var mu sync.Mutex
-	originCalls := 0
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		originCalls++
-		mu.Unlock()
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	t.Cleanup(origin.Close)
-	if err := configureProxy(""); err != nil {
-		t.Fatal(err)
-	}
-	if !probeURL(origin.URL, time.Second) {
-		t.Fatal("inherited usage probe did not reach direct origin")
-	}
-
-	proxyCalls := 0
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		proxyCalls++
-		mu.Unlock()
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	t.Cleanup(proxy.Close)
-	if err := configureProxy(proxy.URL); err != nil {
-		t.Fatal(err)
-	}
-	if !probeURL("http://probe-origin.invalid/usage", time.Second) {
-		t.Fatal("explicit proxy usage probe failed")
-	}
-
-	deadProxy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	deadProxyURL := deadProxy.URL
-	deadProxy.Close()
-	if err := configureProxy(deadProxyURL); err != nil {
-		t.Fatal(err)
-	}
-	if probeURL(origin.URL, 250*time.Millisecond) {
-		t.Fatal("usage probe fell back to direct after explicit proxy failure")
-	}
-	proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
-	if probeURL(origin.URL, time.Second) {
-		t.Fatal("blocked usage probe reached the network")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if originCalls != 1 || proxyCalls != 1 {
-		t.Fatalf("origin calls = %d, proxy calls = %d", originCalls, proxyCalls)
-	}
-}
-
 func TestConcurrentProxyReconfigureAndRequests(t *testing.T) {
 	old := currentProxyState()
 	t.Cleanup(func() { proxyState.Store(old) })
@@ -934,26 +878,6 @@ func TestNonStringProxyConfigFailsClosed(t *testing.T) {
 	}
 	if _, err := hostHTTPDo(mustRequest(t, http.MethodGet, "http://origin.invalid/must-not-send", nil)); err == nil {
 		t.Fatal("blocked state allowed a request")
-	}
-}
-
-func TestUsageProbeRejectsRedirects(t *testing.T) {
-	targetCalls := 0
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		targetCalls++
-	}))
-	defer target.Close()
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Location", target.URL)
-		w.WriteHeader(http.StatusFound)
-	}))
-	defer origin.Close()
-
-	if probeURL(origin.URL, time.Second) {
-		t.Fatal("redirecting usage endpoint was accepted")
-	}
-	if targetCalls != 0 {
-		t.Fatalf("usage probe followed redirect %d times", targetCalls)
 	}
 }
 

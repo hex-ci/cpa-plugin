@@ -127,7 +127,7 @@ plugins:
       # CPAMP usage 上报。URL+key 都设置才会上报。
       # 未配置时 fallback 到 USAGE_REPORT_URL / USAGE_REPORT_KEY /
       # CPAMP_ADMIN_KEY 环境变量或 docker secret 文件。
-      usage_report_url: "http://cpa-manager-plus:18317/v0/management/usage/import"
+      usage_report_url: "http://<你的 CPAMP 主机>:<端口>/v0/management/usage/import"
       usage_report_key: ""
 
       # 插件层 management 鉴权。设置后所有 /v0/management/plugins/workbuddy/*
