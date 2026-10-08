@@ -133,6 +133,11 @@ func buildQoderBody(req *openAIRequest, modelKey, userType string) ([]byte, erro
 	base["stream"] = true
 	base["aliyun_user_type"] = userType
 	base["agent_id"] = "agent_common"
+	// The template's session timestamp is a placeholder: each request is its own
+	// session, so it carries the moment this one started.
+	if biz, ok := base["business"].(map[string]any); ok {
+		biz["begin_at"] = time.Now().UnixMilli()
+	}
 
 	// model_config
 	if mc, ok := base["model_config"].(map[string]any); ok {

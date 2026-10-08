@@ -465,8 +465,8 @@ func TestRefreshWithoutRefreshTokenFailsClosed(t *testing.T) {
 }
 
 func TestTimestampHelpers(t *testing.T) {
-	if got := msToUnixSeconds(1792649969258); got != 1792649969 {
-		t.Errorf("msToUnixSeconds = %d, want 1792649969", got)
+	if got := msToUnixSeconds(1893456000123); got != 1893456000 {
+		t.Errorf("msToUnixSeconds = %d, want 1893456000", got)
 	}
 	if got := msToUnixSeconds(0); got != 0 {
 		t.Errorf("msToUnixSeconds(0) = %d", got)

@@ -25,8 +25,8 @@ func TestCreditsFromFoldsUsageIntoTheCardShape(t *testing.T) {
 	ent.UsageSummary.ConsumedAmount = 14.6484
 	ent.UsageSummary.ConsumptionRatio = 0.0293
 	ent.UserEntitlementPackList = []entPack{
-		packFixture("免费", 0, 0, 1793462399),
-		packFixture("每月登录积分", 500, 14.6484, 1793462399),
+		packFixture("免费", 0, 0, 1893456000),
+		packFixture("每月登录积分", 500, 14.6484, 1893456000),
 	}
 
 	view := creditsFrom(ent, payStatusResponse{UserPayIdentityStr: "Free"})
@@ -42,7 +42,7 @@ func TestCreditsFromFoldsUsageIntoTheCardShape(t *testing.T) {
 	if view.PackCount != 2 || len(view.Packs) != 2 {
 		t.Fatalf("packs = %+v, want both packages listed", view.Packs)
 	}
-	if got := view.Packs[1]; got.Name != "每月登录积分" || got.Limit != 500 || got.Used != 14.65 || got.Expires != "2026-10-31" {
+	if got := view.Packs[1]; got.Name != "每月登录积分" || got.Limit != 500 || got.Used != 14.65 || got.Expires != "2030-01-01" {
 		t.Errorf("pack = %+v, want the monthly bonus with its expiry", got)
 	}
 	if view.FetchedAt == "" {
@@ -72,7 +72,7 @@ func TestPacksFromSkipsHiddenAndNamesTheRest(t *testing.T) {
 	hidden := packFixture("隐藏", 10, 1, 0)
 	hidden.IsHide = true
 	anon := packFixture("", 0, 0, 0)
-	anon.EntitlementBaseInfo.EndTime = 1793462399
+	anon.EntitlementBaseInfo.EndTime = 1893456000
 
 	packs := packsFrom([]entPack{hidden, anon})
 	if len(packs) != 1 {
@@ -81,7 +81,7 @@ func TestPacksFromSkipsHiddenAndNamesTheRest(t *testing.T) {
 	if packs[0].Name != "额度包" {
 		t.Errorf("name = %q, want a fallback label", packs[0].Name)
 	}
-	if packs[0].Expires != "2026-10-31" {
+	if packs[0].Expires != "2030-01-01" {
 		t.Errorf("expires = %q, want the base-info end time", packs[0].Expires)
 	}
 }
@@ -101,8 +101,8 @@ func TestCheckinFrom(t *testing.T) {
 }
 
 func TestFormatDayHandlesSecondsAndMilliseconds(t *testing.T) {
-	for _, stamp := range []int64{1793462399, 1793462399000} {
-		if got := formatDay(stamp); got != "2026-10-31" {
+	for _, stamp := range []int64{1893456000, 1893456000000} {
+		if got := formatDay(stamp); got != "2030-01-01" {
 			t.Errorf("formatDay(%d) = %q, want 2026-10-31", stamp, got)
 		}
 	}

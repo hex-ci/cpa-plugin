@@ -4,7 +4,7 @@ Qoder CN (qoder.com.cn) 手机号验证码登录 → 创建 PAT (pt-)
 
 用法:
   python3 qoder_cn_pat_login.py --phone <你的手机号>        # 交互式: 发码后终端输入验证码
-  python3 qoder_cn_pat_login.py --phone <你的手机号> --code-file /tmp/qw_web/sms_code.txt   # 文件模式(配合后台运行)
+  python3 qoder_cn_pat_login.py --phone <你的手机号> --code-file ./qw_web/sms_code.txt   # 文件模式(配合后台运行)
   python3 qoder_cn_pat_login.py --phone <你的手机号> --name my-pat --days 3650              # PAT 名称/有效期(天)
 
 流程:
@@ -17,7 +17,7 @@ Qoder CN (qoder.com.cn) 手机号验证码登录 → 创建 PAT (pt-)
   storage_state 文件可复用(已登录 cookie)，之后加 --reuse-state 可跳过短信直接造新 PAT。
 
 依赖: playwright + chromium (python3 -m playwright install chromium)
-注意: --single-process 在本机 arm64 必需，否则 page crash。
+注意: --single-process 在 arm64 主机上必需，否则 page crash。
 """
 from __future__ import annotations
 
@@ -187,7 +187,7 @@ async def main() -> int:
     ap.add_argument("--code-file", default=None, help="从文件读验证码(后台模式); 默认终端交互输入")
     ap.add_argument("--reuse-state", default=None, help="复用已登录 storage_state JSON，跳过短信登录直接造 PAT")
     ap.add_argument("--out", default="./qoderwork_pat.json", help="结果输出 JSON 路径")
-    ap.add_argument("--workdir", default="/tmp/qw_web", help="截图/中间产物目录")
+    ap.add_argument("--workdir", default="./qw_web", help="截图/中间产物目录")
     args = ap.parse_args()
 
     workdir = Path(args.workdir)

@@ -9,7 +9,7 @@
 
 | 能力 | 状态 |
 |---|---|
-| 浏览器 OAuth 登录（面板发起，PKCE + 本机回环回调 / 粘贴回调 URL） | 已实现 |
+| 浏览器 OAuth 登录（面板发起，PKCE + 回环回调 / 粘贴回调 URL） | 已实现 |
 | 令牌刷新（设备证明签名，与客户端同算法） | 已实现 |
 | 认证文件识别与解析（`AuthParse`） | 已实现 |
 | 账号面板（登录入口 + 额度 / 签到概览） | 已实现 |
@@ -70,7 +70,7 @@ URL 粘回面板（粘上就会自动提交）。
   "type": "traework",
   "access_token": "…",
   "refresh_token": "…",
-  "expires_at": 1792649969,
+  "expires_at": 1893456000,
   "api_host": "https://api.trae.cn",
   "uid": "…",
   "region": "CN",

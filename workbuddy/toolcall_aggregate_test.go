@@ -80,7 +80,7 @@ func toolCallsOf(t *testing.T, completion map[string]any) []map[string]any {
 func TestAggregateToolCallsWellFormed(t *testing.T) {
 	completion := fold(t,
 		toolFrame(0, "call_a", "run_shell", `{"command":"ls"}`),
-		toolFrame(1, "call_b", "read_file", `{"path":"/tmp/x"}`),
+		toolFrame(1, "call_b", "read_file", `{"path":"sample.txt"}`),
 		doneFrame(),
 	)
 	calls := toolCallsOf(t, completion)
@@ -100,7 +100,7 @@ func TestAggregateToolCallsWellFormed(t *testing.T) {
 func TestAggregateToolCallsMissingIndexNotCollapsed(t *testing.T) {
 	completion := fold(t,
 		toolFrame(-1, "call_a", "run_shell", `{"command":"ls"}`),
-		toolFrame(-1, "call_b", "read_file", `{"path":"/tmp/x"}`),
+		toolFrame(-1, "call_b", "read_file", `{"path":"sample.txt"}`),
 		doneFrame(),
 	)
 	calls := toolCallsOf(t, completion)
@@ -112,7 +112,7 @@ func TestAggregateToolCallsMissingIndexNotCollapsed(t *testing.T) {
 		t.Fatalf("call0 arguments = %v (concatenation of two calls?)", args0)
 	}
 	args1 := calls[1]["function"].(map[string]any)["arguments"]
-	if args1 != `{"path":"/tmp/x"}` {
+	if args1 != `{"path":"sample.txt"}` {
 		t.Fatalf("call1 arguments = %v", args1)
 	}
 }

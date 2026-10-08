@@ -73,7 +73,7 @@ login, and a panel-driven login goes through `host.auth.save` with the same reco
   "type": "traework",
   "access_token": "…",
   "refresh_token": "…",
-  "expires_at": 1792649969,
+  "expires_at": 1893456000,
   "api_host": "https://api.trae.cn",
   "uid": "…",
   "region": "CN",

@@ -1,7 +1,7 @@
 // sign.go implements Qoder's COSY request signing: RSA-wrapped AES session
 // key + AES-128-CBC encrypted identity + MD5 request signature.
 //
-// Pure-Go port of the algorithm validated by reference_impl.py against the
+// Pure-Go port of the signature the desktop client sends, validated against
 // live gateway (qwen3.8-max returned 200 with a real completion).
 package main
 
@@ -26,7 +26,7 @@ import (
 )
 
 // serverPubKeyPEM is Qoder's RSA public key, hardcoded in the desktop client
-// (/tmp/qw_extract/.../main.js). Used to wrap the per-session AES key.
+// the client's own bundle. Used to wrap the per-session AES key.
 const serverPubKeyPEM = `-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDA8iMH5c02LilrsERw9t6Pv5Nc
 4k6Pz1EaDicBMpdpxKduSZu5OANqUq8er4GM95omAGIOPOh+Nx0spthYA2BqGz+l

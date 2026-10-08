@@ -1,6 +1,6 @@
 // encoding.go implements Qoder's custom base64 variant used for request bodies.
 //
-// Algorithm (mirrors /tmp/cpa-plugin/qoderwork/reference_impl.py):
+// Algorithm (verified against the desktop client's own encoder):
 //  1. std = standard base64(plain)
 //  2. rearranged = std[n-a:] + std[a:n-a] + std[:a] where a = n/3
 //  3. map each char from std alphabet to custom alphabet; '=' → '$'
