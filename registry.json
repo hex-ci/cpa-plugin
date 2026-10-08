@@ -231,7 +231,61 @@
         "OAuth",
         "TraeWork",
         "Management"
-      ]
+      ],
+      "install": {
+        "type": "direct",
+        "artifacts": [
+          {
+            "goos": "linux",
+            "goarch": "amd64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_linux_amd64.zip",
+            "sha256": "20448bb45df395d4a928e048170b95474819175c41c24538be75ed3405dff9a1",
+            "size": 3487995
+          },
+          {
+            "goos": "linux",
+            "goarch": "arm64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_linux_arm64.zip",
+            "sha256": "51a386f3f30ce76810dadcf7256e9f03a9cf88f7fdac24f1d4f1161c63dc8e6e",
+            "size": 3170401
+          },
+          {
+            "goos": "darwin",
+            "goarch": "amd64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_darwin_amd64.zip",
+            "sha256": "d7fed3503ebb9014b12b037bcc2281b361ce348e9d90c8783609346cc2ea639f",
+            "size": 3314641
+          },
+          {
+            "goos": "darwin",
+            "goarch": "arm64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_darwin_arm64.zip",
+            "sha256": "2903c90665b59570180ac5c74cd812d7cd95971c132830679fcebccba36a0b45",
+            "size": 3060914
+          },
+          {
+            "goos": "windows",
+            "goarch": "amd64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_windows_amd64.zip",
+            "sha256": "e40de92c37ece0148bedf2a54c4d8fc4ee3ebc9f4add243ebd753c3878278a64",
+            "size": 3383579
+          },
+          {
+            "goos": "windows",
+            "goarch": "arm64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_windows_arm64.zip",
+            "sha256": "8c5c2c71aa5baff2ba4157d9a280a7869cfd3a0e3cecfeb6df92d20c36ebe802",
+            "size": 3127959
+          },
+          {
+            "goos": "freebsd",
+            "goarch": "amd64",
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.1.0/traework_0.1.0_freebsd_amd64.zip",
+            "sha256": "65203097123e0d59d5645f06799a441ff906d5dc2e00bcd4c2390ef37b1a3607",
+            "size": 3399944
+          }
+        ]
+      }
     }
   ]
 }
