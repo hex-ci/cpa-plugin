@@ -1,15 +1,15 @@
 # CPA 插件仓库
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**QoderWork (CN)**、**QwenWork (CN)** 与 **TraeWork (CN)** 四个 OAuth Provider。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**QoderWork**、**QwenWork** 与 **TraeWork** 四个 OAuth Provider。
 
 ## 插件
 
 | ID | 说明 | 源码 |
 |---|---|---|
-| `workbuddy` | Tencent CodeBuddy OAuth、动态模型、executor、CN 每日签到、Global 专家包、积分面板、可选积分调度 | [workbuddy/](workbuddy/) |
-| `qoderwork` | QoderWork CN（qoder.com.cn）：OAuth 设备授权 + PAT 双登录（可共存）、COSY 签名推理、动态模型、每日签到、积分面板、token 保活 | [qoderwork/](qoderwork/) |
-| `qwenwork` | QwenWork CN（gateway.qwenwork.cn）：OAuth 设备授权登录、COSY 签名推理、动态模型、积分/套餐面板、token 保活（无签到/无 PAT） | [qwenwork/](qwenwork/) |
-| `traework` | TraeWork CN（trae.cn）：浏览器 OAuth 登录（PKCE + 设备证明刷新）、认证文件识别解析、动态模型目录、`solo_work_lite` 通道流式对话与工具调用、额度卡片面板、每日签到（手动 + 每天两次自动） | [traework/](traework/) |
+| `workbuddy` | Tencent CodeBuddy OAuth、动态模型、executor、每日签到、专家包、积分面板、可选积分调度 | [workbuddy/](workbuddy/) |
+| `qoderwork` | QoderWork：OAuth 设备授权 + PAT 双登录（可共存）、COSY 签名推理、动态模型、每日签到、积分面板、token 保活 | [qoderwork/](qoderwork/) |
+| `qwenwork` | QwenWork：OAuth 设备授权登录、COSY 签名推理、动态模型、积分/套餐面板、token 保活（无签到/无 PAT） | [qwenwork/](qwenwork/) |
+| `traework` | TraeWork：浏览器 OAuth 登录、认证文件识别解析、动态模型目录、流式对话与工具调用、额度卡片面板、每日签到 | [traework/](traework/) |
 
 ## 多架构 Release
 

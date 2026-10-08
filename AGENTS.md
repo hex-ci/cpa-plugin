@@ -7,7 +7,7 @@
 | `workbuddy/` | `workbuddy` | Tencent CodeBuddy OAuth provider（CN + Global） |
 | `qoderwork/` | `qoderwork` | QoderWork CN provider |
 | `qwenwork/` | `qwenwork` | QwenWork CN provider |
-| `traework/` | `traework` | TraeWork CN（trae.cn）provider |
+| `traework/` | `traework` | TraeWork CN provider |
 
 ## 开发命令
 
