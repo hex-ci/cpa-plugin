@@ -38,7 +38,7 @@ cp traework.so /path/to/cliproxyapi/plugins/
 
 The login is finished in the **plugin panel**: start it from CPA's plugin auth page, approve the TraeWork
 authorization link it returns, then paste the URL from the browser's address bar into the panel's login box
-(pasting submits it).
+(paste, then click submit).
 
 1. CPA management centre → plugin auth → `traework` → click login → open the returned authorization link and
    approve it in the browser;

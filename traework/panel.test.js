@@ -294,7 +294,7 @@ test("panel renders one card per account plus the quota summary", async () => {
   assert.match(first.innerHTML, /剩余 485\.35 · 已用 14\.65 · 额度池 500 · 1 个包/);
   assert.match(first.innerHTML, /每月登录积分/);
   assert.match(first.innerHTML, /至 2026-10-31/);
-  assert.match(first.querySelector(".row .v").textContent, /今日未签到 · 可领 200/);
+  assert.equal(first.querySelector(".row .v").textContent, "今日未签到");
   assert.match(first.innerHTML, /免费版/, "the plan badge comes from the quota identity");
 
   // 卡片只讲额度：认证状态归 CPA 的认证文件模块。
@@ -692,25 +692,36 @@ test("panel decodes the host's HTML escaping in management responses", async () 
   assert.equal(card.querySelector(".pkgs").textContent, "a <b>");
 });
 
-test("panel submits as soon as a callback URL is pasted", async () => {
-  const { calls, byId, context } = runPanel({
+test("panel waits for the submit button instead of sending on paste", async () => {
+  const { byId, calls, context } = runPanel({
     search: "?key=abc",
+    payload: { count: 0, accounts: [] },
     routes: {
       "/login/start": pendingLogin,
-      "/login/callback": { status: "success", message: "登录成功", label: "Trae User", file_name: "traework-1.json" },
+      "/login/callback": { status: "success", message: "登录成功" },
     },
-    payload: { count: 0, accounts: [] },
   });
   await tick();
   await context.startLogin();
   await tick();
-  const input = context.document.getElementById("loginInput");
+  const input = byId.get("loginInput");
   assert.equal(input.focused, true, "the paste box must be ready for the operator");
   input.value = "http://127.0.0.1:38471/authorize?authCodeInfo=%7B%22AuthCode%22%3A%22abc%22%7D";
-  input.listeners.paste();
+  assert.equal(calls.filter((c) => c.url.includes("/login/callback")).length, 0);
+
+  // A paste is just an edit: the operator presses the button when they are ready.
+  if (input.listeners && input.listeners.paste) input.listeners.paste();
   await tick();
-  const submit = calls.find((c) => c.url.includes("/login/callback"));
-  assert.ok(submit, "pasting must submit without an extra click");
-  assert.match(JSON.parse(submit.body).input, /authCodeInfo/);
-  assert.equal(byId.get("loginDoneMsg").textContent.includes("登录成功"), true);
+  await tick();
+  assert.equal(
+    calls.filter((c) => c.url.includes("/login/callback")).length,
+    0,
+    "pasting must not submit the callback",
+  );
+
+  await context.submitCallback();
+  await tick();
+  const submitted = calls.filter((c) => c.url.includes("/login/callback"));
+  assert.equal(submitted.length, 1, "the submit button sends it");
+  assert.match(submitted[0].body, /abc/);
 });

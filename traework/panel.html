@@ -110,8 +110,6 @@ button.done:disabled{opacity:1}
 @keyframes sp{to{transform:rotate(360deg)}}
 .grid-hint{color:var(--mut);text-align:center;padding:40px}
 .grid-hint code{background:var(--code-bg);color:var(--code-fg);padding:1px 5px;border-radius:4px;font-size:12px}
-.footer{margin-top:18px;text-align:center;color:var(--mut);font-size:12px}
-.footer strong{color:var(--fg);font-weight:600}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror the CPA parent's data-theme when
@@ -204,7 +202,6 @@ button.done:disabled{opacity:1}
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="accounts" class="grid"><div class="grid-hint">加载中…</div></div>
-  <footer class="footer">登录在本面板发起；账号与令牌由 CPA 宿主保存，插件只读展示。</footer>
 </div>
 <div class="toasts" id="toasts"></div>
 <script>
@@ -402,12 +399,11 @@ function packsHTML(packs){
       (pk.expires?'<div class="cg-time">至 '+esc(pk.expires)+'</div>':"")+'</div>';
   }).join("")+'</div>';
 }
+// 只报签到与否：奖励多少是上游随时会调的，写在卡片上只会误导。
 function checkinText(ci){
   if(!ci)return "";
   if(!ci.enabled)return "未开放";
-  if(ci.today_checked_in)return "今日已签到";
-  const amount=(ci.credits||0)+(ci.extra_credits||0);
-  return amount>0?("今日未签到 · 可领 "+amount):"今日未签到";
+  return ci.today_checked_in?"今日已签到":"今日未签到";
 }
 // 卡片内容一次性重绘：额度回填时原地替换 innerHTML，节点身份不变（引用它的地方
 // 和测试都还指得着）。
@@ -648,18 +644,6 @@ function loginFocusPaste(){
   if(!input)return;
   try{input.focus()}catch(_){}
 }
-// 粘贴完就自动提交：这一步本来就要人工复制一次，别让人再点一次按钮。
-function loginBindPaste(){
-  const input=document.getElementById("loginInput");
-  if(!input||!input.addEventListener)return;
-  input.addEventListener("paste",function(){
-    setTimeout(function(){
-      if(!loginState)return;
-      if(!((input.value||"").trim()))return;
-      submitCallback();
-    },150);
-  });
-}
 function requiresKey(){
   if(getKey())return false;
   // 无密钥一律不发请求：宿主把空密钥也算一次失败尝试，连点会把这个 IP 封 30 分钟。
@@ -817,7 +801,6 @@ async function adoptLoginParam(){
   loginView("idle");
 }
 
-loginBindPaste();
 if(window.__twThemeSync)window.__twThemeSync();
 adoptLoginParam();
 load(false);

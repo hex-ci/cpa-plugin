@@ -36,7 +36,7 @@ cp traework.so /path/to/cliproxyapi/plugins/
 ## 登录
 
 登录在**插件面板**里收尾：在 CPA 认证页点「登录」拿到 TraeWork 授权链接、完成授权，再把授权后地址栏里的那条
-URL 粘回面板（粘上就会自动提交）。
+URL 粘回面板（粘贴后点「提交」）。
 
 1. CPA 管理端 → 插件认证 → `traework` → 点登录 → 打开返回的授权链接，按页面提示完成授权；
 2. 授权后浏览器会被跳到 `http://127.0.0.1:<临时端口>/authorize?authCodeInfo=…`——**这个页面打不开是正常的**，
