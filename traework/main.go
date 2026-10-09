@@ -13,7 +13,7 @@ import (
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.1.0"
+var version = "0.1.1"
 
 type registration struct {
 	SchemaVersion uint32                 `json:"schema_version"`
