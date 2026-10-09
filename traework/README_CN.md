@@ -57,8 +57,27 @@ URL 粘回面板（粘贴后点「提交」）。
 |---|---|---|
 | `management_key` | string | 可选。设置后，本插件的管理接口除宿主的鉴权外还要求这个 Bearer key（面板可用 `?key=` 传入）。也读环境变量 `TW_MANAGEMENT_KEY`。 |
 | `proxy-url` | string | 可选。本插件所有上游请求走该代理（http/https/socks5/socks5h）。留空则沿用宿主的路由策略；配置非法时按失败关闭处理。 |
+| `desensitize` | boolean | 可选，默认 `false`。把词表里的词在**出站请求**里插入 U+200B，让上游的内容过滤匹配不到。只改 system/developer 提示词、带客户端脚手架（如 `<system-reminder>`）的用户消息、以及工具的 `description`/`title`；用户自己说的话与工具的 JSON schema 不动。 |
+| `desensitize_terms` | array | 可选。屏蔽词表，每项至少两个字符、不能含 U+200B。不写 = 用内置 85 词；写 `[]` = 空词表。 |
 | `checkin_auto` | boolean | 可选，默认 `true`。每天 09:00 与 21:00（本地时间）自动领取每个账号的签到积分；晚上那趟是给早上撞上「人数过多」的账号补一次。面板上的「自动签到」开关只改本次运行，重启后以这里为准。 |
 | `panel_base_url` | string | 可选。面板登录地址的前缀。**默认留空 = 用相对地址**（`/v0/resource/plugins/traework/panel?login=…`），由管理界面的实际来源解析，走反代/域名的部署也正确；填了（如 `https://cpa.example.cn`）则返回绝对地址，便于把链接复制到别处。 |
+
+## 屏蔽词（desensitize）
+
+开启后，插件在把请求发给上游之前，把配置词表里的词改写一遍：在每个匹配词的首个字符后插入一个零宽空格
+（U+200B）。上游的内容过滤匹配不到这些词，而模型读到的文本还是可读的。
+
+只改三类位置，其余原样：
+
+- `system` / `developer` 提示词；
+- 带客户端脚手架标记（`<system-reminder>`、`# AGENTS.md instructions`、`<environment_context>` 等）的
+  **用户消息**——那是客户端注入的提示词，不是用户自己说的话；
+- 工具定义的 `description` / `title`。工具 `parameters` 里的 JSON schema 不动：那是工具契约，改坏 schema
+  比被过滤更糟。
+
+面板右上「屏蔽词」按钮打开设置弹窗：勾选启用、每行一个词、可一键恢复默认词表。保存走宿主的插件配置接口
+（`PATCH /v0/management/plugins/traework/config`），宿主推 `reconfigure` 后生效——弹窗会等运行时真的应用了
+再关闭。默认关闭。
 
 ## 认证文件
 

@@ -39,7 +39,7 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 		case "management_key", "management-key", "proxy-url", "proxy_url",
 			"panel_base_url", "panel-base-url",
 			"login_callback_url", "login-callback-url":
-		case "checkin_auto", "checkin-auto":
+		case "desensitize", "checkin_auto", "checkin-auto":
 			// The only boolean key the plugin owns, so the scalar type check
 			// below (strings only) has to branch out here.
 			if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {

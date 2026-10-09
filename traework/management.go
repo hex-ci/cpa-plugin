@@ -47,6 +47,7 @@ func managementRegistration() managementRegistrationResponse {
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List TraeWork accounts with quota snapshots."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Read quota and daily-bonus state for one (auth_index) or all accounts."},
+			{Method: http.MethodGet, Path: base + "/desensitize", Description: "Get the effective blocked-term settings."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Claim the daily bonus for one (auth_index) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle the automatic daily claim (enabled: true/false)."},
 			{Method: http.MethodPost, Path: base + "/login/start", Description: "Start a login attempt the panel drives."},
@@ -91,6 +92,13 @@ func handleManagement(raw []byte) ([]byte, error) {
 			return okEnvelope(mgmtJSONResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()})), nil
 		}
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, payload)), nil
+	case req.Method == http.MethodGet && strings.HasSuffix(path, "/desensitize"):
+		cfg := currentDesensitize()
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{
+			"enabled": cfg.enabled,
+			"terms":   append([]string(nil), cfg.terms...),
+			"source":  cfg.source,
+		})), nil
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/credits"):
 		payload, err := creditsPayload(req.Query.Get("auth_index"), req.Query.Get("fresh") != "")
 		if err != nil {

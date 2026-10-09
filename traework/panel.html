@@ -104,6 +104,19 @@ button.done:disabled{opacity:1}
 .toast.ok{border-left-color:var(--ok);background:var(--ok-soft)}
 .toast.warn{border-left-color:var(--warn);background:var(--warn-soft)}
 .toast.err{border-left-color:var(--err);background:var(--err-soft)}
+.modal-mask{position:fixed;inset:0;background:var(--scrim);display:none;align-items:center;justify-content:center;z-index:9000;padding:16px;backdrop-filter:blur(2px)}
+.modal-mask.show{display:flex}
+.modal{background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-lg);width:min(560px,100%);max-height:min(90vh,640px);display:flex;flex-direction:column;box-shadow:var(--toast-shadow)}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
+.modal-hd h2{font-size:15px;margin:0;color:var(--fg);font-weight:600}
+.modal-x{background:transparent;color:var(--mut);padding:4px 10px;font-size:18px;line-height:1}
+.modal-x:hover{color:var(--fg);background:var(--surface-muted)}
+.modal-bd{padding:16px;overflow:auto}
+.modal-bd .hint{color:var(--mut);font-size:12px;margin:0 0 10px;line-height:1.5}
+.modal-bd textarea{width:100%;min-height:160px;background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--fg);font:12px/1.45 ui-monospace,monospace;resize:vertical;outline:none}
+.modal-bd textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-ring)}
+.modal-bd textarea::placeholder{color:var(--placeholder)}
+.modal-ft{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border);background:var(--surface);border-radius:0 0 var(--radius-lg) var(--radius-lg)}
 .toast .t{font-weight:600;margin-bottom:3px}
 .toast .d{color:var(--mut);font-size:12px;line-height:1.45}
 .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--on-acc);border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
@@ -170,6 +183,7 @@ button.done:disabled{opacity:1}
   <div class="bar">
     <button id="reload" onclick="load(true,this)">刷新数据</button>
     <button id="checkinAll" class="sec" onclick="checkinAll(this)">全部签到</button>
+    <button id="desensitizeOpen" class="sec" onclick="openDesensitizeModal()">屏蔽词</button>
     <label class="toggle" title="每天 09:00 / 21:00 各领一次（晚上那趟补早上赶上繁忙的账号）"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
     <span class="toggle" id="svtime"></span>
   </div>
@@ -202,6 +216,26 @@ button.done:disabled{opacity:1}
   </div>
   <div class="summary card" id="summaryBox" style="display:none"></div>
   <div id="accounts" class="grid"><div class="grid-hint">加载中…</div></div>
+</div>
+<div class="modal-mask" id="desensitizeModal" onclick="onDesensitizeMaskClick(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="desensitizeModalTitle">
+    <div class="modal-hd">
+      <h2 id="desensitizeModalTitle">屏蔽词设置</h2>
+      <button type="button" class="modal-x" onclick="closeDesensitizeModal()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <label class="toggle"><input type="checkbox" id="desensitizeEnabled"> 启用屏蔽词混淆</label>
+      <p class="hint">当前词表：<span id="desensitizeSource"></span>。每行一个词，留空保存为空词表。</p>
+      <label class="hint" for="desensitizeTerms">词表</label>
+      <textarea id="desensitizeTerms" rows="10" placeholder="每行一个词"></textarea>
+    </div>
+    <div class="modal-ft">
+      <button type="button" class="sec" onclick="restoreDesensitizeTerms(this)">恢复默认词表</button>
+      <button type="button" class="sec" onclick="restoreAllDesensitizeDefaults(this)">恢复全部默认</button>
+      <button type="button" class="sec" onclick="closeDesensitizeModal()">取消</button>
+      <button type="button" onclick="saveDesensitize(this)">保存</button>
+    </div>
+  </div>
 </div>
 <div class="toasts" id="toasts"></div>
 <script>
@@ -488,6 +522,73 @@ async function toggleAuto(on){
   }catch(err){
     toast("设置失败","err",String((err&&err.message)||err));
   }
+}
+
+/* ---------- 屏蔽词：只改出站请求里的提示词与工具元数据 ---------- */
+function renderDesensitizeSettings(d){
+  const enabled=document.getElementById("desensitizeEnabled");
+  const terms=document.getElementById("desensitizeTerms");
+  const source=document.getElementById("desensitizeSource");
+  if(enabled)enabled.checked=!!d.enabled;
+  if(terms)terms.value=(d.terms||[]).join("\n");
+  if(source)source.textContent=d.source==="custom"?"自定义词表":"内置默认词表";
+}
+function sameDesensitizeTerms(left,right){
+  return Array.isArray(left)&&left.length===right.length&&left.every(function(term,i){return term===right[i]});
+}
+// 保存是写到宿主的插件配置，再由宿主推 reconfigure；等运行时真的应用了再关弹窗。
+async function waitForDesensitizeSettings(matches){
+  for(let attempt=0;attempt<20;attempt++){
+    const d=await api("/desensitize");
+    if(matches(d)){renderDesensitizeSettings(d);return}
+    await new Promise(function(resolve){setTimeout(resolve,100)});
+  }
+  throw new Error("设置已写入，但运行时未应用");
+}
+async function openDesensitizeModal(){
+  if(!getKey())return;
+  try{
+    renderDesensitizeSettings(await api("/desensitize"));
+    document.getElementById("desensitizeModal").classList.add("show");
+  }catch(e){toast("读取屏蔽词设置失败","err",String((e&&e.message)||e))}
+}
+function closeDesensitizeModal(){
+  const box=document.getElementById("desensitizeModal");
+  if(box)box.classList.remove("show");
+}
+function onDesensitizeMaskClick(e){
+  if(e.target===document.getElementById("desensitizeModal"))closeDesensitizeModal();
+}
+async function saveDesensitize(btn){
+  const terms=Array.from(new Set(document.getElementById("desensitizeTerms").value.split(/\r?\n/).map(function(v){return v.trim()}).filter(Boolean)));
+  const enabled=document.getElementById("desensitizeEnabled").checked;
+  if(btn)btn.disabled=true;
+  try{
+    await api("/config",{method:"PATCH",body:{desensitize:enabled,desensitize_terms:terms}});
+    await waitForDesensitizeSettings(function(d){return d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms)});
+    toast("屏蔽词设置已保存","ok");
+    closeDesensitizeModal();
+  }catch(e){toast("保存屏蔽词设置失败","err",String((e&&e.message)||e))}
+  finally{if(btn)btn.disabled=false}
+}
+async function restoreDesensitizeTerms(btn){
+  if(btn)btn.disabled=true;
+  try{
+    await api("/config",{method:"PATCH",body:{desensitize_terms:null}});
+    await waitForDesensitizeSettings(function(d){return d.source==="default"});
+    toast("已恢复默认词表","ok");
+  }catch(e){toast("恢复默认词表失败","err",String((e&&e.message)||e))}
+  finally{if(btn)btn.disabled=false}
+}
+async function restoreAllDesensitizeDefaults(btn){
+  if(btn)btn.disabled=true;
+  try{
+    await api("/config",{method:"PATCH",body:{desensitize:false,desensitize_terms:null}});
+    await waitForDesensitizeSettings(function(d){return d.enabled===false&&d.source==="default"});
+    toast("已恢复全部默认","ok");
+    closeDesensitizeModal();
+  }catch(e){toast("恢复默认失败","err",String((e&&e.message)||e))}
+  finally{if(btn)btn.disabled=false}
 }
 
 function renderSummary(accounts){
@@ -801,6 +902,9 @@ async function adoptLoginParam(){
   loginView("idle");
 }
 
+document.addEventListener("keydown",function(e){
+  if(e.key==="Escape")closeDesensitizeModal();
+});
 if(window.__twThemeSync)window.__twThemeSync();
 adoptLoginParam();
 load(false);

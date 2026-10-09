@@ -105,6 +105,8 @@ function runPanel({
     createElement(tag) {
       return fakeElement(tag);
     },
+    // The panel binds page-level shortcuts (Escape closes the dialogs).
+    addEventListener() {},
   };
   document.querySelector = () => null;
   const calls = [];
@@ -396,6 +398,60 @@ test("the auto check-in toggle posts the new state", async () => {
   const toast = byId.get("toasts").children[byId.get("toasts").children.length - 1];
   assert.match(toast.querySelector(".t").textContent, /自动签到已关闭/);
   assert.match(toast.querySelector(".d").textContent, /重启后以插件配置/);
+});
+
+// 屏蔽词弹窗：读的是插件的运行时设置，写的是宿主的插件配置。
+test("panel opens the blocked-term dialog with the effective settings", async () => {
+  const { byId, calls, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [] },
+    routes: { "/desensitize": { enabled: true, terms: ["kill", "malware"], source: "custom" } },
+  });
+  await tick();
+  await context.openDesensitizeModal();
+  await tick();
+  assert.ok(calls.some((c) => c.url.endsWith("/desensitize")), "the dialog reads the runtime settings");
+  assert.equal(byId.get("desensitizeEnabled").checked, true);
+  assert.equal(byId.get("desensitizeTerms").value, "kill\nmalware");
+  assert.equal(byId.get("desensitizeSource").textContent, "自定义词表");
+});
+
+test("saving the blocked-term dialog writes the host plugin config", async () => {
+  const { byId, calls, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [] },
+    routes: { "/desensitize": { enabled: true, terms: ["kill", "malware"], source: "custom" } },
+  });
+  await tick();
+  await context.openDesensitizeModal();
+  await tick();
+  byId.get("desensitizeTerms").value = "kill\n\nmalware\nkill";
+  byId.get("desensitizeEnabled").checked = true;
+  await context.saveDesensitize(null);
+  await tick();
+  await tick();
+
+  const patch = calls.filter((c) => c.method === "PATCH");
+  assert.equal(patch.length, 1, "one config write");
+  assert.match(patch[0].url, /\/v0\/management\/plugins\/traework\/config$/);
+  const body = JSON.parse(patch[0].body);
+  assert.equal(body.desensitize, true);
+  assert.deepEqual(body.desensitize_terms, ["kill", "malware"], "blank lines and duplicates are dropped");
+});
+
+test("restoring the default term list patches a null list", async () => {
+  const { calls, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [] },
+    routes: { "/desensitize": { enabled: true, terms: ["kill"], source: "default" } },
+  });
+  await tick();
+  await context.restoreDesensitizeTerms(null);
+  await tick();
+  await tick();
+  const patch = calls.filter((c) => c.method === "PATCH");
+  assert.equal(patch.length, 1);
+  assert.equal(JSON.parse(patch[0].body).desensitize_terms, null);
 });
 
 // 列表接口只回缓存，落在卡片上的额度由 /credits 补齐；点刷新要绕过缓存。

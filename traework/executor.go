@@ -87,6 +87,8 @@ func buildSoloRequest(payload []byte, model string) ([]byte, error) {
 	if in.MaxTokens != nil && *in.MaxTokens > 0 {
 		body["max_tokens"] = *in.MaxTokens
 	}
+	// Last step, so the rewrite sees exactly what goes upstream.
+	applyDesensitizeInPlace(body, currentDesensitize())
 	return json.Marshal(body)
 }
 

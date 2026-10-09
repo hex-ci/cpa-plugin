@@ -60,8 +60,26 @@ nothing for plugin providers. That box cannot succeed for TraeWork — the login
 |---|---|---|
 | `management_key` | string | Optional. When set, this plugin's management routes require this Bearer key on top of the host's own auth (the panel can pass it as `?key=`). Also read from `TW_MANAGEMENT_KEY`. |
 | `proxy-url` | string | Optional proxy for every TraeWork request (http/https/socks5/socks5h). Empty keeps the host routing policy; an invalid value fails closed. |
+| `desensitize` | boolean | Optional, default `false`. Inserts U+200B into configured terms in the **outbound** request so upstream's content filter cannot match them. Only system/developer prompts, user messages carrying client scaffolding (`<system-reminder>`, …), and tool `description`/`title` are rewritten; the user's own words and the tool JSON schema are left alone. |
+| `desensitize_terms` | array | Optional. The term list: at least two runes per entry, no U+200B. Absent uses the built-in 85 terms; `[]` means no terms. |
 | `checkin_auto` | boolean | Optional, default `true`. Claims each account's daily bonus automatically at 09:00 and 21:00 local time (the evening pass retries a busy morning). The panel toggle only changes the current run. |
 | `panel_base_url` | string | Optional. Prefix for the panel login address. **Empty (default) keeps it relative** (`/v0/resource/plugins/traework/panel?login=…`), which resolves on whatever origin serves the management UI — correct behind a reverse proxy or a domain. Set it (e.g. `https://cpa.example.cn`) to get an absolute link that can be copied elsewhere. |
+
+## Blocked terms (desensitize)
+
+When enabled, the plugin rewrites the request before it goes upstream: every configured term gets a zero-width
+space (U+200B) inserted after its first character. Upstream's content filter can no longer match those terms while
+the model still reads readable text.
+
+Only three places are touched: `system`/`developer` prompts; user messages that carry client scaffolding
+(`<system-reminder>`, `# AGENTS.md instructions`, `<environment_context>`, …), which are client-authored prompts
+rather than the user's own words; and tool `description`/`title`. The JSON schema inside a tool's `parameters` is
+left alone — that is the tool contract, and breaking it is worse than being filtered.
+
+The panel's "屏蔽词" button opens the settings dialog: enable it, one term per line, restore the default list in
+one click. Saving goes through the host's plugin config endpoint
+(`PATCH /v0/management/plugins/traework/config`) and takes effect when the host pushes `reconfigure`; the dialog
+waits for the runtime to actually apply it. Off by default.
 
 ## Auth file
 

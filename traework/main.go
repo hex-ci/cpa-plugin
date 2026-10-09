@@ -124,6 +124,8 @@ func twRegistration() registration {
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "management_key", Type: pluginapi.ConfigFieldTypeString, Description: "Bearer key enforced by TraeWork for mutating management endpoints; also env TW_MANAGEMENT_KEY."},
 				{Name: "proxy-url", Type: pluginapi.ConfigFieldTypeString, Description: "Optional plugin-level proxy for all TraeWork HTTP traffic. Supports http, https, socks5, socks5h; empty inherits the host routing. Invalid settings fail closed."},
+				{Name: "desensitize", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Insert U+200B into configured blocked terms in system/developer prompt text and tool description fields (default false)."},
+				{Name: "desensitize_terms", Type: pluginapi.ConfigFieldTypeArray, Description: "Editable literal term list for desensitize; missing uses the built-in 85 terms and [] means an empty custom list."},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Claim the daily TraeWork bonus automatically at 09:00 and 21:00 local time (the evening slot retries a busy morning). Manual claims stay available in the panel either way; default true."},
 			},
 		},
@@ -147,6 +149,9 @@ func configure(raw []byte) error {
 	nextPanelBase := ""
 	nextCallbackURL := ""
 	nextCheckinAuto := true
+	nextDesensitize := false
+	var nextDesensitizeTerms []string
+	desensitizeTermsSet := false
 	if len(raw) > 0 {
 		var req struct {
 			ConfigYAML []byte `json:"config_yaml"`
@@ -184,11 +189,27 @@ func configure(raw []byte) error {
 		if checkinRaw != "" {
 			nextCheckinAuto = checkinRaw == "true"
 		}
+		if desensitizeRaw := strings.TrimSpace(scalars["desensitize"]); desensitizeRaw != "" {
+			nextDesensitize = desensitizeRaw == "true"
+		}
+		nextDesensitizeTerms, desensitizeTermsSet, err = parseDesensitizeTerms(req.ConfigYAML)
+		if err != nil {
+			proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+			return err
+		}
 	}
 	managementKey.Store(nextMgmtKey)
 	panelBaseURL.Store(nextPanelBase)
 	loginCallbackOverride.Store(nextCallbackURL)
 	setCheckinAuto(nextCheckinAuto)
+	// A bad term list is a configuration error, not something to ignore: the
+	// operator asked for obfuscation and silently not doing it is worse.
+	desensitizeCfg, err := buildDesensitizeConfig(nextDesensitize, nextDesensitizeTerms, desensitizeTermsSet)
+	if err != nil {
+		proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
+		return err
+	}
+	desensitizeRuntime.Store(desensitizeCfg)
 	// configure() runs on every register/reconfigure; the scheduler arms once.
 	ensureCheckinScheduler()
 	return configureProxy(nextProxyURL)
