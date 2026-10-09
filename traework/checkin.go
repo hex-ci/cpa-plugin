@@ -24,6 +24,10 @@ const (
 // checkinHours is the automatic pass schedule, local time.
 var checkinHours = []int{9, 21}
 
+// claimRetryDelay is the first of two short backoffs before a busy claim is
+// reported as retryable. A variable so tests do not sleep.
+var claimRetryDelay = 3 * time.Second
+
 var (
 	// checkinAuto defaults to on: the bonus expires daily, so not claiming it is
 	// a straight loss.
@@ -64,11 +68,11 @@ type checkinClaimResult struct {
 // failures in the body, not in the status line, so a 200 with code != 0 is a
 // failure here.
 func claimCheckin(sa *storedAuth) map[string]any {
-	headers := ideHeaders(sa.AccessToken, sa.UID, sa.MachineID, sa.DeviceID)
+	headers := ugHeaders(sa)
 	var res checkinClaimResult
 	// postJSON must run before res is read: passing it as an argument to
 	// claimOutcome would copy the struct before the decode fills it in.
-	err := postJSON(apiBaseCN+checkinClaimPath, headers, map[string]any{}, &res)
+	err := postJSON(apiBaseCN+checkinClaimPath, headers, ugBody(), &res)
 	return claimOutcome(res, err)
 }
 
@@ -129,7 +133,14 @@ func claimCheckinForAccount(authIndex string) map[string]any {
 		return out
 	}
 
-	for k, v := range checkinClaimFn(sa) {
+	outcome := checkinClaimFn(sa)
+	// 9074 also happens for real (peak hours), so retry a couple of times before
+	// reporting it: the window clears within seconds when it is genuine.
+	for attempt := 0; attempt < 2 && outcome["retryable"] == true; attempt++ {
+		time.Sleep(claimRetryDelay * time.Duration(attempt+1))
+		outcome = checkinClaimFn(sa)
+	}
+	for k, v := range outcome {
 		out[k] = v
 	}
 	if out["success"] == true {

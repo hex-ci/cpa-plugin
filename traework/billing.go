@@ -4,6 +4,8 @@
 package main
 
 import (
+	"hash/fnv"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -110,11 +112,56 @@ type checkinStatusResponse struct {
 	ExtraCredits int64 `json:"extra_credits"`
 }
 
+// ugReqSourceLite is the client kind the user-growth endpoints expect in the
+// body: 2 = SOLO/Lite (this plugin's channel), 1 = IDE.
+const ugReqSourceLite = 2
+
+// ugDeviceID is the device identifier the user-growth endpoints want. They
+// reject the UUID the OAuth login registers, and they reject it with the generic
+// "当前参与用户太多" (9074) business code — which reads like a busy window and
+// therefore never clears. The desktop client sends the numeric id its native
+// device service hands it; a stable numeric id per account is accepted the same
+// way, so one is derived from the stored UUID and reused for every call.
+func ugDeviceID(sa *storedAuth) string {
+	seed := strings.TrimSpace(sa.DeviceID)
+	if seed == "" {
+		seed = strings.TrimSpace(sa.UID)
+	}
+	if seed == "" {
+		return ""
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(seed))
+	// 13 digits: the shape the client's own device id has.
+	return strconv.FormatUint(1_000_000_000_000+hash.Sum64()%9_000_000_000_000, 10)
+}
+
+// ugHeaders builds the header set for the user-growth endpoints: the OAuth
+// headers minus the IDE-specific ones, plus the numeric device id and the region
+// the service partitions on.
+func ugHeaders(sa *storedAuth) map[string]string {
+	headers := map[string]string{
+		"Authorization": "Cloud-IDE-JWT " + sa.AccessToken,
+		"User-Agent":    ideUserAgent,
+		"X-User-Region": "CN",
+	}
+	if device := ugDeviceID(sa); device != "" {
+		headers["X-Device-Id"] = device
+	}
+	return headers
+}
+
+// ugBody is the body the desktop client sends to the user-growth endpoints: it
+// declares which client is asking.
+func ugBody() map[string]any {
+	return map[string]any{"req_source": ugReqSourceLite}
+}
+
 // fetchCredentials reads the three billing endpoints. Only the entitlement
 // usage is load-bearing: a failed plan or bonus lookup degrades the card
 // instead of blanking out the quota it is there to show.
 func fetchCredentials(sa *storedAuth) (*creditsView, *checkinView, error) {
-	headers := ideHeaders(sa.AccessToken, sa.UID, sa.MachineID, sa.DeviceID)
+	headers := ugHeaders(sa)
 
 	var ent entUsageResponse
 	if err := postJSON(apiBaseCN+entUsagePath, headers, map[string]any{"require_usage": true}, &ent); err != nil {
@@ -124,11 +171,11 @@ func fetchCredentials(sa *storedAuth) (*creditsView, *checkinView, error) {
 	var pay payStatusResponse
 	_ = postJSON(apiBaseCN+payStatusPath, headers, map[string]any{
 		"trae_client": "Lite",
-		"device_id":   sa.DeviceID,
+		"device_id":   ugDeviceID(sa),
 	}, &pay)
 
 	var checkin checkinStatusResponse
-	_ = postJSON(apiBaseCN+checkinStatusPath, headers, map[string]any{}, &checkin)
+	_ = postJSON(apiBaseCN+checkinStatusPath, headers, ugBody(), &checkin)
 
 	return creditsFrom(ent, pay), checkinFrom(checkin), nil
 }
