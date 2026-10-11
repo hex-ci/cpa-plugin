@@ -62,7 +62,7 @@ nothing for plugin providers. That box cannot succeed for TraeWork — the login
 | `proxy-url` | string | Optional proxy for every TraeWork request (http/https/socks5/socks5h). Empty keeps the host routing policy; an invalid value fails closed. |
 | `desensitize` | boolean | Optional, default `false`. Inserts U+200B into configured terms in the **outbound** request so upstream's content filter cannot match them. Only system/developer prompts, user messages carrying client scaffolding (`<system-reminder>`, …), and tool `description`/`title` are rewritten; the user's own words and the tool JSON schema are left alone. |
 | `desensitize_terms` | array | Optional. The term list: at least two runes per entry, no U+200B. Absent uses the built-in 85 terms; `[]` means no terms. |
-| `checkin_auto` | boolean | Optional, default `true`. Claims each account's daily bonus automatically at 09:00 and 21:00 local time (the evening pass retries a busy morning). The panel toggle only changes the current run. |
+| `checkin_auto` | boolean | Optional, default `true`. Claims each account's daily bonus automatically at 09:00 and 21:00 local time (the evening pass retries a busy morning). The panel toggle writes this key back to the host's plugin config, so it survives a reconfigure or restart. |
 | `panel_base_url` | string | Optional. Prefix for the panel login address. **Empty (default) keeps it relative** (`/v0/resource/plugins/traework/panel?login=…`), which resolves on whatever origin serves the management UI — correct behind a reverse proxy or a domain. Set it (e.g. `https://cpa.example.cn`) to get an absolute link that can be copied elsewhere. |
 
 ## Blocked terms (desensitize)
@@ -122,8 +122,8 @@ and day, and business code `9074` ("too many users") is treated as **retryable**
 
 Automatic claiming is on by default and runs at 09:00 and 21:00 local time — the evening pass retries whatever the
 morning pass lost to a busy window. Claims are serialised per account, so two browser tabs cannot claim the same day
-twice. Set `checkin_auto: false` in the plugin config to switch it off (the panel toggle only affects the current
-run).
+twice. Switch it off with `checkin_auto: false` in the plugin config, or with the panel's toggle — the toggle writes
+the value back to the host's plugin config, so it stays off across a reconfigure or restart.
 
 ## Development
 

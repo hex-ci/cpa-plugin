@@ -383,21 +383,44 @@ test("panel claims every account and reloads the list", async () => {
   assert.match(toast.querySelector(".d").textContent, /成功 1/);
 });
 
-test("the auto check-in toggle posts the new state", async () => {
+// 勾选状态必须写进宿主的插件配置：只改运行时的写法会被下一次 reconfigure
+// 读回配置默认值，用户看到的勾会自己弹回来。
+test("the auto check-in toggle persists into the host plugin config", async () => {
   const { byId, calls, context } = runPanel({
     search: "?key=abc",
-    payload: { count: 0, accounts: [], checkin_auto: true },
-    routes: { "/checkin/config": { checkin_auto: false, persistent: false } },
+    payload: { count: 0, accounts: [], checkin_auto: false },
   });
   await tick();
   await context.toggleAuto(false);
   await tick();
-  const posted = calls.filter((c) => c.method === "POST" && c.url.endsWith("/checkin/config"));
-  assert.equal(posted.length, 1);
-  assert.equal(posted[0].body, '{"enabled":false}');
+  await tick();
+  const patched = calls.filter((c) => c.method === "PATCH");
+  assert.equal(patched.length, 1, "one config write");
+  assert.match(patched[0].url, /\/v0\/management\/plugins\/traework\/config$/);
+  assert.equal(patched[0].body, '{"checkin_auto":false}');
+  assert.ok(
+    calls.some((c) => c.url.endsWith("/accounts") && calls.indexOf(c) > 0),
+    "the panel waits for the runtime to apply it",
+  );
   const toast = byId.get("toasts").children[byId.get("toasts").children.length - 1];
   assert.match(toast.querySelector(".t").textContent, /自动签到已关闭/);
-  assert.match(toast.querySelector(".d").textContent, /重启后以插件配置/);
+  assert.match(toast.querySelector(".d").textContent, /已写入插件配置/);
+});
+
+// 写失败就把勾还原，不能让界面显示一个没生效的状态。
+test("a failed toggle reverts the checkbox", async () => {
+  const { byId, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [], checkin_auto: true },
+    fail: new Error("HTTP 403"),
+  });
+  // load() could not run (every request fails), so the element comes from the page
+  // itself — the same cached node the panel will reach for.
+  const toggle = context.document.getElementById("autoToggle");
+  toggle.checked = false;
+  await context.toggleAuto(false);
+  await tick();
+  assert.equal(toggle.checked, true, "the checkbox must snap back");
 });
 
 // 屏蔽词弹窗：读的是插件的运行时设置，写的是宿主的插件配置。

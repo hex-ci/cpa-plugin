@@ -514,14 +514,29 @@ async function checkinAll(btn){
   }
 }
 // 自动签到开关：宿主没有回写插件配置的回调，所以只在本次运行内生效。
+// 写入宿主的插件配置（与屏蔽词同一路）。只改运行时的写法会被宿主的下一次
+// reconfigure 读回配置里的值——用户看到的勾会自己弹回去。
 async function toggleAuto(on){
   if(!getKey())return;
+  const wanted=!!on;
   try{
-    const payload=await api("/checkin/config",{method:"POST",body:{enabled:!!on}});
-    toast("自动签到已"+(payload.checkin_auto?"开启":"关闭"),"ok",payload.persistent===false?"本次运行生效；重启后以插件配置 checkin_auto 为准":"");
+    await api("/config",{method:"PATCH",body:{checkin_auto:wanted}});
+    await waitForCheckinAuto(wanted);
+    toast("自动签到已"+(wanted?"开启":"关闭"),"ok","已写入插件配置 checkin_auto");
   }catch(err){
+    const toggle=document.getElementById("autoToggle");
+    if(toggle)toggle.checked=!wanted;
     toast("设置失败","err",String((err&&err.message)||err));
   }
+}
+// 宿主 PATCH 之后会推 reconfigure，等运行时真的切过去再报成功。
+async function waitForCheckinAuto(wanted){
+  for(let attempt=0;attempt<20;attempt++){
+    const data=await api("/accounts");
+    if(!!data.checkin_auto===wanted)return;
+    await new Promise(function(resolve){setTimeout(resolve,100)});
+  }
+  throw new Error("设置已写入，但运行时未应用");
 }
 
 /* ---------- 屏蔽词：只改出站请求里的提示词与工具元数据 ---------- */
