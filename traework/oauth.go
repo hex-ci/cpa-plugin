@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -429,6 +431,15 @@ const callbackPage = `<!doctype html><html lang="zh-CN"><head><meta charset="utf
 	`<title>TraeWork 登录</title></head><body style="font-family:system-ui;padding:48px;line-height:1.7">` +
 	`<h2>%s</h2><p>%s</p></body></html>`
 
+// callbackPageHTML renders the callback page with both strings escaped. The
+// failure text is taken straight from the query string and this page is served
+// from the gateway's own origin without authentication, so escaping it is the
+// only thing between a crafted ?error_msg= and script running next to the CPA
+// management key.
+func callbackPageHTML(title, message string) string {
+	return fmt.Sprintf(callbackPage, html.EscapeString(title), html.EscapeString(message))
+}
+
 // newCallbackServer builds the loopback listener for one login attempt.
 func newCallbackServer(ctx *loginCtx) *http.Server {
 	mux := http.NewServeMux()
@@ -519,7 +530,7 @@ func handleCallbackResource(query url.Values, headers http.Header) string {
 				"keys":  callbackKeyNames(query),
 			})
 		}
-		return fmt.Sprintf(callbackPage, "登录失败", failure+"，请回到 CPA 重新发起登录。")
+		return callbackPageHTML("登录失败", failure+"，请回到 CPA 重新发起登录。")
 	}
 	code := authCodeFromQuery(query)
 	if code == "" {
@@ -527,21 +538,21 @@ func handleCallbackResource(query url.Values, headers http.Header) string {
 		hostLogInfo("traework: public callback arrived without an authorization code", map[string]any{
 			"keys": callbackKeyNames(query),
 		})
-		return fmt.Sprintf(callbackPage, "等待登录回调", "本页是TraeWork的登录回调地址，请不要直接访问。")
+		return callbackPageHTML("等待登录回调", "本页是TraeWork的登录回调地址，请不要直接访问。")
 	}
 	ctx := pendingAttemptFor(headers)
 	if ctx == nil {
 		hostLogInfo("traework: public callback arrived with no pending login", map[string]any{
 			"keys": callbackKeyNames(query),
 		})
-		return fmt.Sprintf(callbackPage, "没有进行中的登录", "请先在 CPA 的 TraeWork 面板点「开始登录」，再回到浏览器完成授权。")
+		return callbackPageHTML("没有进行中的登录", "请先在 CPA 的 TraeWork 面板点「开始登录」，再回到浏览器完成授权。")
 	}
 	ctx.storeCode(code)
 	hostLogInfo("traework: login code captured on the public callback route", map[string]any{
 		"state": ctx.state,
 		"keys":  callbackKeyNames(query),
 	})
-	return fmt.Sprintf(callbackPage, "登录成功", "授权码已收到，可以关闭本页并回到 CPA。")
+	return callbackPageHTML("登录成功", "授权码已收到，可以关闭本页并回到 CPA。")
 }
 
 // pendingAttemptFor picks the attempt a callback belongs to: the newest one
@@ -625,7 +636,7 @@ func serveCallback(server *http.Server, listener net.Listener) {
 func writeCallbackPage(w http.ResponseWriter, title, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprintf(w, callbackPage, title, message)
+	_, _ = io.WriteString(w, callbackPageHTML(title, message))
 }
 
 // progress advances one attempt as far as it can and reports the status the
