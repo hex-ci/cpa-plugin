@@ -183,14 +183,16 @@ func fetchCredentials(sa *storedAuth) (*creditsView, *checkinView, error) {
 // creditsFrom folds the usage response into the card's view.
 func creditsFrom(ent entUsageResponse, pay payStatusResponse) *creditsView {
 	summary := ent.UsageSummary
+	// Folded here so the row count and the rows themselves cannot drift apart.
+	rows := packsFrom(ent.UserEntitlementPackList)
 	view := &creditsView{
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
 		TotalUsed: roundCredits(summary.ConsumedAmount),
 		TotalSize: roundCredits(summary.TotalAmount),
 		Ratio:     summary.ConsumptionRatio,
 		Identity:  pay.UserPayIdentityStr,
-		Packs:     packsFrom(ent.UserEntitlementPackList),
-		PackCount: len(ent.UserEntitlementPackList),
+		Packs:     rows,
+		PackCount: len(rows), // 折行后的条数：卡片上能看到的行数
 	}
 	switch {
 	case ent.IsDollarUsageBilling:
@@ -224,8 +226,13 @@ func creditsFrom(ent entUsageResponse, pay payStatusResponse) *creditsView {
 }
 
 // packsFrom names each package for the breakdown rows, skipping the hidden ones.
+// packsFrom folds the entitlement packages into one row per name. The daily
+// check-in bonus adds a package per claim, so a row per package would grow
+// without bound; a group sums what it holds and reports its nearest expiry,
+// which is the one that runs out first.
 func packsFrom(packs []entPack) []packView {
 	out := make([]packView, 0, len(packs))
+	positions := make(map[string]int, len(packs))
 	for _, pack := range packs {
 		if pack.IsHide {
 			continue
@@ -241,12 +248,23 @@ func packsFrom(packs []entPack) []packView {
 		if expires == 0 {
 			expires = pack.EntitlementBaseInfo.EndTime
 		}
-		out = append(out, packView{
-			Name:    name,
-			Limit:   roundCredits(pack.EntitlementBaseInfo.Quota.CreditsLimit),
-			Used:    roundCredits(pack.Usage.CreditsAmount),
-			Expires: formatDay(expires),
-		})
+		limit := roundCredits(pack.EntitlementBaseInfo.Quota.CreditsLimit)
+		used := roundCredits(pack.Usage.CreditsAmount)
+		day := formatDay(expires)
+
+		position, seen := positions[name]
+		if !seen {
+			positions[name] = len(out)
+			out = append(out, packView{Name: name, Limit: limit, Used: used, Expires: day})
+			continue
+		}
+		row := &out[position]
+		row.Limit = roundCredits(row.Limit + limit)
+		row.Used = roundCredits(row.Used + used)
+		// Dates are YYYY-MM-DD, so the smallest string is the nearest expiry.
+		if day != "" && (row.Expires == "" || day < row.Expires) {
+			row.Expires = day
+		}
 	}
 	return out
 }
