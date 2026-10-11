@@ -7,6 +7,7 @@ package main
 import (
 	"html"
 	"regexp"
+	"unicode/utf8"
 )
 
 var (
@@ -49,12 +50,15 @@ func truncateRedacted(s string, n int) string {
 	return truncate(redactSecrets(s), n)
 }
 
-// truncate cuts s to at most n bytes. Caller is responsible for rune-boundary
-// safety when the string may contain multi-byte UTF-8 (most callers pass
-// upstream JSON which is ASCII-safe at token boundaries).
+// truncate cuts s to at most n bytes without splitting a multi-byte character:
+// upstream errors carry Chinese text, and half a rune renders as U+FFFD.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n]
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

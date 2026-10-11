@@ -335,13 +335,25 @@ func cachedCredentials(sa *storedAuth, authIndex string, fresh bool) (*creditsVi
 	return credits, checkin, err
 }
 
+// pruneCredentialCache drops the snapshots of accounts that are gone. The map is
+// keyed by auth index and would otherwise keep one entry per account ever seen.
+func pruneCredentialCache(live map[string]bool) {
+	billingMu.Lock()
+	defer billingMu.Unlock()
+	for authIndex := range billingCache {
+		if !live[authIndex] {
+			delete(billingCache, authIndex)
+		}
+	}
+}
+
 // peekCredentials returns the cached snapshot without fetching, so listing
 // accounts stays a single round trip. The panel fills the gaps per card.
 func peekCredentials(authIndex string) (*creditsView, *checkinView) {
 	billingMu.Lock()
 	defer billingMu.Unlock()
 	entry, ok := billingCache[authIndex]
-	if !ok {
+	if !ok || time.Since(entry.at) >= billingTTL {
 		return nil, nil
 	}
 	return entry.credits, entry.checkin

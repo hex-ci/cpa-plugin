@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -154,11 +155,14 @@ func managementAuthorized(req managementRequestWire) bool {
 	if want == "" {
 		return true
 	}
-	got := strings.TrimSpace(strings.TrimPrefix(req.Headers.Get("Authorization"), "Bearer "))
+	got := ""
+	if header := strings.TrimSpace(req.Headers.Get("Authorization")); len(header) > 7 && strings.EqualFold(header[:7], "bearer ") {
+		got = strings.TrimSpace(header[7:])
+	}
 	if got == "" {
 		got = strings.TrimSpace(req.Query.Get("key"))
 	}
-	return got == want
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 type accountView struct {
@@ -225,6 +229,7 @@ func accountsPayload() (map[string]any, error) {
 		return nil, err
 	}
 	now := time.Now().Unix()
+	live := make(map[string]bool, len(files))
 	out := make([]accountView, 0, len(files))
 	for _, f := range files {
 		sa, phys, err := hostAuthGetBundle(f.AuthIndex)
@@ -249,6 +254,7 @@ func accountsPayload() (map[string]any, error) {
 			ExpiresAt: sa.ExpiresAt,
 			Disabled:  phys.Disabled,
 		}
+		live[phys.AuthIndex] = true
 		view.Credits, view.Checkin = peekCredentials(phys.AuthIndex)
 		view.Expired = sa.ExpiresAt > 0 && sa.ExpiresAt <= now
 		if sa.ExpiresAt > 0 {
@@ -256,6 +262,8 @@ func accountsPayload() (map[string]any, error) {
 		}
 		out = append(out, view)
 	}
+	pruneCredentialCache(live)
+	pruneCheckinLocks(live)
 	return map[string]any{
 		"provider":     providerName,
 		"count":        len(out),

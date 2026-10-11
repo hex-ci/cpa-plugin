@@ -117,7 +117,9 @@ func toAuthData(sa *storedAuth, carrier map[string]any) pluginapi.AuthData {
 	if sa.AvatarURL != "" {
 		meta["avatar"] = sa.AvatarURL
 	}
-	meta["note"] = displayNote(sa)
+	if _, hasNote := carrier["note"]; !hasNote {
+		meta["note"] = displayNote(sa)
+	}
 	for key, value := range carrier {
 		if _, owned := meta[key]; owned {
 			continue
@@ -167,13 +169,46 @@ func authFileJSON(sa *storedAuth, carrier map[string]any) ([]byte, error) {
 // authSaveFn is the seam the tests use: no host exists outside the gateway.
 var authSaveFn = hostAuthSave
 
-// saveAuthRecord writes one account's auth file through the host.
+// saveAuthRecord writes one account's auth file through the host. The host
+// replaces the whole file, so a carrier that carries nothing would drop the
+// settings the operator put on the record — the panel drives its own logins and
+// has no host session to inherit them from, so they are read back from the file
+// this account already has.
 func saveAuthRecord(sa *storedAuth, carrier map[string]any) (string, error) {
+	if len(carrier) == 0 {
+		carrier = existingCarrierFn(sa)
+	}
 	payload, err := authFileJSON(sa, carrier)
 	if err != nil {
 		return "", err
 	}
 	return authSaveFn(authFileNameFor(sa), payload)
+}
+
+// existingCarrierFn is a seam: the lookup needs the host RPC, which only exists
+// inside the gateway.
+var existingCarrierFn = existingAuthCarrier
+
+// existingAuthCarrier reads the user-owned keys (weight, prefix, headers, proxy,
+// model aliases, note…) off the record this account already has. A brand new
+// account has no file yet, so this returns nothing and the save starts clean.
+func existingAuthCarrier(sa *storedAuth) map[string]any {
+	name := authFileNameFor(sa)
+	files, err := hostAuthList()
+	if err != nil {
+		return nil
+	}
+	for _, file := range files {
+		if !strings.EqualFold(file.Name, name) {
+			continue
+		}
+		phys, err := hostAuthGetPhysical(file.AuthIndex)
+		if err != nil {
+			return nil
+		}
+		return parseAuthMetadataCarrier(phys.JSON)
+	}
+	return nil
 }
 
 // parseDisabledFromAuthJSON reads the host's `disabled` flag out of an auth file.

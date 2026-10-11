@@ -63,7 +63,13 @@ nothing for plugin providers. That box cannot succeed for TraeWork — the login
 | `desensitize` | boolean | Optional, default `false`. Inserts U+200B into configured terms in the **outbound** request so upstream's content filter cannot match them. Only system/developer prompts, user messages carrying client scaffolding (`<system-reminder>`, …), and tool `description`/`title` are rewritten; the user's own words and the tool JSON schema are left alone. |
 | `desensitize_terms` | array | Optional. The term list: at least two runes per entry, no U+200B. Absent uses the built-in 85 terms; `[]` means no terms. |
 | `checkin_auto` | boolean | Optional, default `true`. Claims each account's daily bonus automatically at 09:00 and 21:00 local time (the evening pass retries a busy morning). The panel toggle writes this key back to the host's plugin config, so it survives a reconfigure or restart. |
-| `panel_base_url` | string | Optional. Prefix for the panel login address. **Empty (default) keeps it relative** (`/v0/resource/plugins/traework/panel?login=…`), which resolves on whatever origin serves the management UI — correct behind a reverse proxy or a domain. Set it (e.g. `https://cpa.example.cn`) to get an absolute link that can be copied elsewhere. |
+| `login_callback_url` | string | Optional. When the browser cannot reach the gateway's loopback port, point the authorization redirect at a public address your reverse proxy maps onto the plugin's `/authorize` (must be http(s)). **That resource route is unauthenticated by design**: anyone who can reach it may submit an authorization code while you have a login in flight, or mark that attempt failed (a code is bound to that attempt's PKCE verifier, so someone else's code cannot be redeemed). Configure it only when a public callback is genuinely needed, and restrict who can reach it. |
+
+
+Configuration applies **all or nothing**: when any value fails to parse or validate (a malformed boolean, a non-http(s)
+`login_callback_url`, an out-of-range term list), the reconfigure changes no runtime setting at all and the plugin proxy
+goes into its blocked state — every upstream request fails until it is fixed, and the reason is logged. Failing loudly
+beats running on half a configuration.
 
 ## Blocked terms (desensitize)
 

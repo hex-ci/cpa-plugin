@@ -77,6 +77,22 @@ func TestManagementAuthHonoursKeyWhenConfigured(t *testing.T) {
 	if !managementAuthorized(header) {
 		t.Error("a matching Bearer header must be accepted")
 	}
+	// The auth scheme is case-insensitive, and a header that is not a Bearer
+	// one must not fall through as if it were empty.
+	lowercase := managementRequestWire{ManagementRequest: pluginapi.ManagementRequest{
+		Method:  http.MethodGet,
+		Headers: http.Header{"Authorization": []string{"bearer s3cret"}},
+	}}
+	if !managementAuthorized(lowercase) {
+		t.Error("the scheme name is case-insensitive")
+	}
+	notBearer := managementRequestWire{ManagementRequest: pluginapi.ManagementRequest{
+		Method:  http.MethodGet,
+		Headers: http.Header{"Authorization": []string{"Token s3cret"}},
+	}}
+	if managementAuthorized(notBearer) {
+		t.Error("a non-Bearer scheme must not authorize")
+	}
 	query := managementRequestWire{ManagementRequest: pluginapi.ManagementRequest{
 		Method: http.MethodGet,
 		Query:  url.Values{"key": []string{"s3cret"}},

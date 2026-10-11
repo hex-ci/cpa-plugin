@@ -110,6 +110,17 @@ func checkinLockFor(authIndex string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
+// pruneCheckinLocks drops the per-account mutexes of accounts that are gone.
+func pruneCheckinLocks(live map[string]bool) {
+	checkinLocks.Range(func(key, _ any) bool {
+		authIndex, ok := key.(string)
+		if ok && !live[authIndex] {
+			checkinLocks.Delete(key)
+		}
+		return true
+	})
+}
+
 // claimCheckinForAccount claims one account's bonus and reports what happened.
 // A status read comes first: when it already says today is taken there is
 // nothing to gain from the write.
@@ -124,7 +135,12 @@ func claimCheckinForAccount(authIndex string) map[string]any {
 
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
-	defer mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			mu.Unlock()
+		}
+	}()
 
 	if _, checkin, err := cachedCredentials(sa, authIndex, true); err == nil && checkin != nil && checkin.TodayCheckedIn {
 		out["success"] = true
@@ -135,9 +151,22 @@ func claimCheckinForAccount(authIndex string) map[string]any {
 
 	outcome := checkinClaimFn(sa)
 	// 9074 also happens for real (peak hours), so retry a couple of times before
-	// reporting it: the window clears within seconds when it is genuine.
+	// reporting it: the window clears within seconds when it is genuine. The
+	// account lock is dropped while backing off — holding it across a sleep
+	// would stall every other claim on this account for the whole retry.
 	for attempt := 0; attempt < 2 && outcome["retryable"] == true; attempt++ {
+		mu.Unlock()
+		locked = false
 		time.Sleep(claimRetryDelay * time.Duration(attempt+1))
+		mu.Lock()
+		locked = true
+		// Another driver may have claimed while this one waited.
+		if _, checkin, err := cachedCredentials(sa, authIndex, true); err == nil && checkin != nil && checkin.TodayCheckedIn {
+			out["success"] = true
+			out["already"] = true
+			out["message"] = "今日已签到"
+			return out
+		}
 		outcome = checkinClaimFn(sa)
 	}
 	for k, v := range outcome {

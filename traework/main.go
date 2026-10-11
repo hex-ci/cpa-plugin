@@ -38,7 +38,6 @@ type registrationCapability struct {
 // panel can call the right endpoints regardless of the host's routing layout.
 var (
 	managementKey         atomic.Value // string
-	panelBaseURL          atomic.Value // string
 	loginCallbackOverride atomic.Value // string
 	managementBasePath    atomic.Value // string
 	resourceBasePath      atomic.Value // string
@@ -146,7 +145,6 @@ func twRegistration() registration {
 func configure(raw []byte) error {
 	nextMgmtKey := ""
 	nextProxyURL := ""
-	nextPanelBase := ""
 	nextCallbackURL := ""
 	nextCheckinAuto := true
 	nextDesensitize := false
@@ -167,12 +165,11 @@ func configure(raw []byte) error {
 		}
 		nextMgmtKey = strings.TrimSpace(scalars["management_key"])
 		nextProxyURL = strings.TrimSpace(scalars["proxy-url"])
+		if nextProxyURL == "" {
+			nextProxyURL = strings.TrimSpace(scalars["proxy_url"])
+		}
 		if nextMgmtKey == "" {
 			nextMgmtKey = strings.TrimSpace(scalars["management-key"])
-		}
-		nextPanelBase = strings.TrimSpace(scalars["panel_base_url"])
-		if nextPanelBase == "" {
-			nextPanelBase = strings.TrimSpace(scalars["panel-base-url"])
 		}
 		nextCallbackURL = strings.TrimSpace(scalars["login_callback_url"])
 		if nextCallbackURL == "" {
@@ -198,17 +195,18 @@ func configure(raw []byte) error {
 			return err
 		}
 	}
-	managementKey.Store(nextMgmtKey)
-	panelBaseURL.Store(nextPanelBase)
-	loginCallbackOverride.Store(nextCallbackURL)
-	setCheckinAuto(nextCheckinAuto)
 	// A bad term list is a configuration error, not something to ignore: the
-	// operator asked for obfuscation and silently not doing it is worse.
+	// operator asked for obfuscation and silently not doing it is worse. It is
+	// built before anything is stored, so a rejected configuration leaves the
+	// running one untouched instead of applying half of the new one.
 	desensitizeCfg, err := buildDesensitizeConfig(nextDesensitize, nextDesensitizeTerms, desensitizeTermsSet)
 	if err != nil {
 		proxyState.Store(&proxyRoutingState{mode: proxyModeBlocked})
 		return err
 	}
+	managementKey.Store(nextMgmtKey)
+	loginCallbackOverride.Store(nextCallbackURL)
+	setCheckinAuto(nextCheckinAuto)
 	desensitizeRuntime.Store(desensitizeCfg)
 	// configure() runs on every register/reconfigure; the scheduler arms once.
 	ensureCheckinScheduler()

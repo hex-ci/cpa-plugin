@@ -6,6 +6,7 @@ package main
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -37,15 +38,15 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 		}
 		switch key.Value {
 		case "management_key", "management-key", "proxy-url", "proxy_url",
-			"panel_base_url", "panel-base-url",
 			"login_callback_url", "login-callback-url":
 		case "desensitize", "checkin_auto", "checkin-auto":
-			// The only boolean key the plugin owns, so the scalar type check
-			// below (strings only) has to branch out here.
+			// Boolean keys branch out of the string-only check below. YAML tags
+			// True/TRUE as !!bool too, so the value is normalised here: the
+			// consumers compare against the literal "true".
 			if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
 				return nil, errors.New(key.Value + " must be true or false")
 			}
-			values[key.Value] = value.Value
+			values[key.Value] = strconv.FormatBool(strings.EqualFold(value.Value, "true"))
 			continue
 		default:
 			continue

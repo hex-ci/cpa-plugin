@@ -61,38 +61,6 @@ func TestConfigureAppliesCheckinAuto(t *testing.T) {
 }
 
 // The panel's login address is relative by default so a reverse-proxied
-// management UI resolves it on its own origin; panel_base_url makes it absolute
-// for operators who want a copyable link.
-func TestConfigureAppliesPanelBaseURL(t *testing.T) {
-	t.Cleanup(func() {
-		panelBaseURL.Store("")
-		_ = configureYAML(t, "management_key: k\n")
-	})
-
-	if err := configureYAML(t, "panel_base_url: https://cpa.example.cn/\n"); err != nil {
-		t.Fatal(err)
-	}
-	if got := loadString(panelBaseURL); got != "https://cpa.example.cn/" {
-		t.Errorf("panel_base_url = %q", got)
-	}
-
-	// The hyphenated spelling is accepted too.
-	if err := configureYAML(t, "panel-base-url: http://cpa.internal:8317\n"); err != nil {
-		t.Fatal(err)
-	}
-	if got := loadString(panelBaseURL); got != "http://cpa.internal:8317" {
-		t.Errorf("panel-base-url = %q", got)
-	}
-
-	// Absent key: back to the relative default.
-	if err := configureYAML(t, "management_key: k\n"); err != nil {
-		t.Fatal(err)
-	}
-	if got := loadString(panelBaseURL); got != "" {
-		t.Errorf("panelBaseURL without the key = %q, want empty (relative)", got)
-	}
-}
-
 // login_callback_url points the authorization page at a public address the
 // operator reverse-proxies onto the plugin's listener; the default stays
 // loopback.

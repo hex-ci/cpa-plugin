@@ -94,8 +94,13 @@ func TestToAuthDataKeepsUserMetadataAndOwnsItsKeys(t *testing.T) {
 	if ad.Metadata["type"] != providerName {
 		t.Errorf("plugin-owned type was overwritten: %v", ad.Metadata["type"])
 	}
-	if ad.Metadata["note"] == "user note" {
-		t.Error("plugin-owned note must win over a stale carrier value")
+	// The note is the operator's field: their text survives, and only an empty
+	// one gets the automatic summary.
+	if ad.Metadata["note"] != "user note" {
+		t.Errorf("note = %v, want the operator's own text", ad.Metadata["note"])
+	}
+	if automatic := toAuthData(sa, map[string]any{"weight": 7}); !strings.Contains(automatic.Metadata["note"].(string), displayName) {
+		t.Errorf("note without a carrier value = %v, want the automatic summary", automatic.Metadata["note"])
 	}
 }
 

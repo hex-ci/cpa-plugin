@@ -53,9 +53,12 @@ type loginCtx struct {
 	callbackURL string
 	port        int
 
-	mu        sync.Mutex
-	code      string
-	failure   string
+	mu      sync.Mutex
+	code    string
+	failure string
+	// cancelled is set when the operator drops the attempt; a redeem already in
+	// flight checks it before it writes the account.
+	cancelled bool
 	redeemed  *pluginapi.AuthData
 	stored    *storedAuth
 	lastError string
@@ -106,7 +109,11 @@ func (c *loginCtx) redeemOnce(carrier map[string]any) (pluginapi.AuthData, *stor
 
 	auth, sa, err := redeemLoginCode(c, code, carrier)
 	if err == nil {
-		if _, errSave := saveAuthRecord(sa, carrier); errSave != nil {
+		if c.wasCancelled() {
+			// The operator cancelled while the exchange was in flight: the
+			// credentials are valid but the account must not appear.
+			err = errors.New("登录已取消")
+		} else if _, errSave := saveAuthRecord(sa, carrier); errSave != nil {
 			err = fmt.Errorf("保存认证文件失败：%w", errSave)
 		}
 	}
@@ -120,10 +127,29 @@ func (c *loginCtx) redeemOnce(carrier map[string]any) (pluginapi.AuthData, *stor
 			c.expires = until
 		}
 	} else {
+		// A spent or invalid code never becomes redeemable again, and the panel
+		// polls the status every two seconds: keeping it would re-post the same
+		// dead code to the upstream exchange until the attempt times out.
 		c.lastError = err.Error()
+		c.code = ""
+		c.failure = err.Error() + "，请重新发起登录"
 	}
 	c.mu.Unlock()
 	return auth, sa, err
+}
+
+// wasCancelled reports whether the operator dropped this attempt.
+func (c *loginCtx) wasCancelled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cancelled
+}
+
+// markCancelled stops an in-flight redeem from persisting its account.
+func (c *loginCtx) markCancelled() {
+	c.mu.Lock()
+	c.cancelled = true
+	c.mu.Unlock()
 }
 
 func (c *loginCtx) completed() *pluginapi.AuthData {
@@ -680,7 +706,8 @@ func (c *loginCtx) progress(authDir string, carrier map[string]any) (pluginapi.A
 		if errors.Is(err, errRedeemInFlight) {
 			return pluginapi.AuthLoginStatusPending, "正在换取令牌…"
 		}
-		return pluginapi.AuthLoginStatusError, "换取令牌失败：" + err.Error()
+		// The code is spent by now, so the only way forward is a new attempt.
+		return pluginapi.AuthLoginStatusError, "换取令牌失败：" + err.Error() + "，请重新发起登录"
 	}
 	return pluginapi.AuthLoginStatusSuccess, "登录成功"
 }
@@ -793,6 +820,7 @@ func panelLoginCancel(state string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx.markCancelled()
 	ctx.close()
 	loginStates.Delete(state)
 	return map[string]any{"status": "cancelled"}, nil
@@ -1053,10 +1081,18 @@ func handleRefreshAuth(request []byte) ([]byte, error) {
 	if strings.TrimSpace(res.RefreshToken) != "" {
 		sa.RefreshToken = res.RefreshToken
 	}
-	if expiresAt := msToUnixSeconds(res.TokenExpireAt); expiresAt > 0 {
+	switch expiresAt := msToUnixSeconds(res.TokenExpireAt); {
+	case expiresAt > 0:
 		sa.ExpiresAt = expiresAt
-	} else if expiresAt := tokenExpiry(res.Token); expiresAt > 0 {
-		sa.ExpiresAt = expiresAt
+	default:
+		if fromToken := tokenExpiry(res.Token); fromToken > 0 {
+			sa.ExpiresAt = fromToken
+		} else {
+			// Keep the old (already past) value and the host would ask again in
+			// five minutes, forever. Assume the usual hour and let the next
+			// refresh correct it.
+			sa.ExpiresAt = time.Now().Add(30 * time.Minute).Unix()
+		}
 	}
 	if uid, _ := accountIdentityFromToken(res.Token); uid != "" {
 		sa.UID = uid
