@@ -86,6 +86,7 @@ function runPanel({
   payload = null,
   routes = null,
   fail = null,
+  failOn = null,
   storage = null,
   embedded = false,
 } = {}) {
@@ -119,6 +120,7 @@ function runPanel({
       body: options && options.body ? String(options.body) : null,
     });
     if (fail) throw fail;
+    if (failOn && target.includes(failOn)) throw new Error("HTTP 500");
     if (routes) {
       for (const [fragment, response] of Object.entries(routes)) {
         if (target.includes(fragment)) return { ok: true, status: 200, json: async () => response };
@@ -803,4 +805,83 @@ test("panel waits for the submit button instead of sending on paste", async () =
   const submitted = calls.filter((c) => c.url.includes("/login/callback"));
   assert.equal(submitted.length, 1, "the submit button sends it");
   assert.match(submitted[0].body, /abc/);
+});
+
+// 开关在拿到后端状态之前不能显示任何取值：默认开，HTML 里没 checked 会让人以为关着。
+test("the auto check-in toggle stays unknown until the backend answers", async () => {
+  const panel = runPanel({ search: "?key=abc", payload: { count: 0, accounts: [], checkin_auto: true } });
+  assert.equal(panel.context.document.getElementById("autoToggle").disabled, true, "must not show a value it has not read");
+
+  await tick();
+  const toggle = panel.context.document.getElementById("autoToggle");
+  assert.equal(toggle.disabled, false);
+  assert.equal(toggle.checked, true);
+});
+
+// 读不到就让用户看见「未知」，而不是一个恰好为假的勾。
+test("a failed load marks the toggle as unknown", async () => {
+  const { byId, context } = runPanel({ search: "?key=abc", fail: new Error("HTTP 500") });
+  await tick();
+  const toggle = context.document.getElementById("autoToggle");
+  assert.equal(toggle.disabled, true);
+  assert.equal(toggle.checked, false);
+  assert.match(toggle.title, /读取失败/);
+  assert.ok(byId.has("accounts"));
+});
+
+// 配置写成功、运行时应用慢，不能报成失败把勾改回去。
+test("a saved toggle survives a lagging runtime", async () => {
+  const { byId, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [], checkin_auto: true },
+  });
+  await tick();
+  const toggle = context.document.getElementById("autoToggle");
+  toggle.checked = false;
+  await context.toggleAuto(false);
+  await tick();
+
+  assert.equal(toggle.checked, false, "the operator's choice must stick");
+  const toast = byId.get("toasts").children[byId.get("toasts").children.length - 1];
+  assert.match(toast.querySelector(".t").textContent, /自动签到已关闭/);
+  assert.match(toast.querySelector(".d").textContent, /宿主稍后应用/);
+});
+
+// 取消失败不能装作成功：服务端那次尝试还在，刷新面板又会被认领回来。
+test("a failed cancel keeps the pending login on screen", async () => {
+  const { byId, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [], checkin_auto: true },
+    routes: {
+      "/login/current": { status: "none", message: "" },
+      "/login/start": { status: "pending", state: "state-1", authorize_url: "https://www.trae.cn/authorization?x=1" },
+    },
+    failOn: "/login/cancel",
+  });
+  await tick();
+  await context.startLogin();
+  await tick();
+  assert.equal(byId.get("loginPending").style.display, "block");
+
+  await context.cancelLogin();
+  await tick();
+  assert.equal(byId.get("loginPending").style.display, "block", "the pending view must stay");
+  const toast = byId.get("toasts").children[byId.get("toasts").children.length - 1];
+  assert.match(toast.querySelector(".t").textContent, /取消失败/);
+});
+
+// 保存屏蔽词失败后要回读后端真实设置，别让弹窗里的值冒充已生效的配置。
+test("a failed blocked-term save re-reads the effective settings", async () => {
+  const { calls, context } = runPanel({
+    search: "?key=abc",
+    payload: { count: 0, accounts: [], checkin_auto: true },
+    fail: new Error("HTTP 403"),
+  });
+  await tick();
+  await context.openDesensitizeModal();
+  await tick();
+  await context.saveDesensitize();
+  await tick();
+  const reads = calls.filter((c) => c.method === "GET" && c.url.endsWith("/desensitize"));
+  assert.ok(reads.length >= 2, "the dialog must reload the effective settings after a failed save");
 });

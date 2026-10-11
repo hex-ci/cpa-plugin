@@ -184,7 +184,7 @@ button.done:disabled{opacity:1}
     <button id="reload" onclick="load(true,this)">刷新数据</button>
     <button id="checkinAll" class="sec" onclick="checkinAll(this)">全部签到</button>
     <button id="desensitizeOpen" class="sec" onclick="openDesensitizeModal()">屏蔽词</button>
-    <label class="toggle" title="每天 09:00 / 21:00 各领一次（晚上那趟补早上赶上繁忙的账号）"><input type="checkbox" id="autoToggle" onchange="toggleAuto(this.checked)"> 自动签到</label>
+    <label class="toggle" title="每天 09:00 / 21:00 各领一次（晚上那趟补早上赶上繁忙的账号）"><input type="checkbox" id="autoToggle" disabled onchange="toggleAuto(this.checked)"> 自动签到</label>
     <span class="toggle" id="svtime"></span>
   </div>
   <div class="card" id="loginBox" style="margin-bottom:14px">
@@ -514,19 +514,42 @@ async function checkinAll(btn){
   }
 }
 // 自动签到开关：宿主没有回写插件配置的回调，所以只在本次运行内生效。
+// 跨刷新保护：用户刚切换过的取值，短时间内不接受旧响应覆盖。
+const autoToggleHold={until:0};
+function markAutoToggleUnknown(reason){
+  const toggle=document.getElementById("autoToggle");
+  if(!toggle)return;
+  toggle.disabled=true;
+  toggle.checked=false;
+  toggle.title=reason;
+}
 // 写入宿主的插件配置（与屏蔽词同一路）。只改运行时的写法会被宿主的下一次
 // reconfigure 读回配置里的值——用户看到的勾会自己弹回去。
 async function toggleAuto(on){
-  if(!getKey())return;
+  const toggle=document.getElementById("autoToggle");
   const wanted=!!on;
+  if(!getKey()){
+    if(toggle){toggle.checked=!wanted;toggle.disabled=true;toggle.title="需要管理密钥才能修改自动签到"}
+    toast("需要管理密钥","warn","从 CPA 主面板嵌入时会自动获取");
+    return;
+  }
+  autoToggleHold.until=Date.now()+8000;
   try{
     await api("/config",{method:"PATCH",body:{checkin_auto:wanted}});
+  }catch(err){
+    autoToggleHold.until=0;
+    if(toggle)toggle.checked=!wanted;
+    toast("设置失败","err",String((err&&err.message)||err));
+    return;
+  }
+  // 配置已经写入。运行时应用慢是另一回事，不能把界面改回旧值说成失败。
+  try{
     await waitForCheckinAuto(wanted);
     toast("自动签到已"+(wanted?"开启":"关闭"),"ok","已写入插件配置 checkin_auto");
   }catch(err){
-    const toggle=document.getElementById("autoToggle");
-    if(toggle)toggle.checked=!wanted;
-    toast("设置失败","err",String((err&&err.message)||err));
+    toast("自动签到已"+(wanted?"开启":"关闭"),"warn","已写入插件配置，宿主稍后应用");
+  }finally{
+    autoToggleHold.until=Date.now()+1500;
   }
 }
 // 宿主 PATCH 之后会推 reconfigure，等运行时真的切过去再报成功。
@@ -583,7 +606,11 @@ async function saveDesensitize(btn){
     await waitForDesensitizeSettings(function(d){return d.enabled===enabled&&d.source==="custom"&&sameDesensitizeTerms(d.terms,terms)});
     toast("屏蔽词设置已保存","ok");
     closeDesensitizeModal();
-  }catch(e){toast("保存屏蔽词设置失败","err",String((e&&e.message)||e))}
+  }catch(e){
+    toast("保存屏蔽词设置失败","err",String((e&&e.message)||e));
+    // 弹窗里改过的值没生效：读回后端的真实设置，别让用户以为已经按新词表跑了。
+    try{renderDesensitizeSettings(await api("/desensitize"))}catch(_){}
+  }
   finally{if(btn)btn.disabled=false}
 }
 async function restoreDesensitizeTerms(btn){
@@ -689,6 +716,7 @@ async function load(showToast,btn){
       renderSummary([]);
       if(svtime)svtime.textContent="";
       showAuth("需要管理密钥（management key）才能读取账号数据。从 CPA 主面板嵌入时会自动获取，无需输入。");
+      markAutoToggleUnknown("需要管理密钥才能读取自动签到状态");
       return;
     }
     const data=await api("/accounts");
@@ -705,7 +733,12 @@ async function load(showToast,btn){
     }
     lastAccounts=accounts;
     const autoToggle=document.getElementById("autoToggle");
-    if(autoToggle)autoToggle.checked=!!data.checkin_auto;
+    if(autoToggle){
+      autoToggle.disabled=false;
+      autoToggle.title="每天 09:00 / 21:00 各领一次（晚上那趟补早上赶上繁忙的账号）";
+      // 用户刚改过就别拿旧响应覆盖回去；等运行时确认后再交还控制权。
+      if(Date.now()>=autoToggleHold.until)autoToggle.checked=!!data.checkin_auto;
+    }
     renderSummary(accounts);
     if(svtime)svtime.textContent="共 "+accounts.length+" 个账号 · 更新于 "+new Date().toLocaleTimeString("zh-CN",{hour12:false});
     if(showToast)toast("已刷新","ok",accounts.length+" 个账号");
@@ -715,6 +748,7 @@ async function load(showToast,btn){
     hint.className="grid-hint";
     const message=String((err&&err.message)||err);
     hint.textContent="读取失败："+message;
+    markAutoToggleUnknown("账号数据读取失败，自动签到状态未知");
     list.append(hint);
     renderSummary([]);
     if(svtime)svtime.textContent="";
@@ -858,16 +892,19 @@ async function cancelLogin(btn){
   if(btn)btn.disabled=true;
   try{
     if(loginState&&getKey())await api("/login/cancel",{method:"POST",body:{state:loginState}});
-  }catch(_){
-  }finally{
-    loginStopPolling();
-    loginState=null;
-    loginAuthorize="";
-    loginView("idle");
-    loginSetMeta("");
-    loginSetStatus("","");
+  }catch(err){
+    // 服务端那次尝试还在等，界面就不能切回空闲：下次刷新又会把它认领回来。
     if(btn)btn.disabled=false;
+    toast("取消失败","err",String((err&&err.message)||err));
+    return;
   }
+  loginStopPolling();
+  loginState=null;
+  loginAuthorize="";
+  loginView("idle");
+  loginSetMeta("");
+  loginSetStatus("","");
+  if(btn)btn.disabled=false;
 }
 
 async function copyAuthorize(){
@@ -921,6 +958,8 @@ document.addEventListener("keydown",function(e){
   if(e.key==="Escape")closeDesensitizeModal();
 });
 if(window.__twThemeSync)window.__twThemeSync();
+// 开关的初始态在代码里也标一次「未知」：不能指望标记属性一定在（也便于测试）。
+markAutoToggleUnknown("正在读取自动签到状态…");
 adoptLoginParam();
 load(false);
 </script>
