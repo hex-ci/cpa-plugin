@@ -221,7 +221,7 @@
       "name": "TraeWork",
       "description": "TraeWork CN (trae.cn) provider for CLIProxyAPI: browser OAuth login (PKCE with a loopback callback) and device-proof token refresh, the account's model catalogue, and a streaming chat executor for the solo_work_lite channel with tool-call passthrough, plus an account panel.",
       "author": "Hex",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "repository": "https://github.com/hex-ci/cpa-plugin",
       "logo": "https://raw.githubusercontent.com/hex-ci/cpa-plugin/main/traework/assets/traework.png",
       "homepage": "https://github.com/hex-ci/cpa-plugin/tree/main/traework",
@@ -238,51 +238,51 @@
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_linux_amd64.zip",
-            "sha256": "2a83591fb4d8d1788d386a2ca23742f1bd182e3ee8ba96da05d23db0f4023be2",
-            "size": 3499547
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_linux_amd64.zip",
+            "sha256": "f5158d082be092af2e91974c3b4507b7de1e075591320e28652372d958e4e087",
+            "size": 3499876
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_linux_arm64.zip",
-            "sha256": "974a55f6acf9472bf539e4e76099d7e0e9a14af3a31b7b837d71432d713df6af",
-            "size": 3179906
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_linux_arm64.zip",
+            "sha256": "f3ddf8bd2c49eb4fcde39d9f0d40aae3afa5d149b91a1e016557f41f78f5a736",
+            "size": 3179944
           },
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_darwin_amd64.zip",
-            "sha256": "25b9fec4640cd2bc311ab10b625185ea53300492b304494bc8a3c89e90cb760d",
-            "size": 3326148
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_darwin_amd64.zip",
+            "sha256": "95918c937ffa19bfc16eb329341095db2cbc513e4c3e0ad99f0e127e2156fd8d",
+            "size": 3326691
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_darwin_arm64.zip",
-            "sha256": "62721b950b18f30231caa8ffa27ada09de7560ac8035ae8aa8a78e6bc920e402",
-            "size": 3070350
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_darwin_arm64.zip",
+            "sha256": "fa4bfd0502a50de23ed9db4f801b884ffaf26814e3e9fd66e5e04c2dfbe53bdc",
+            "size": 3070664
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_windows_amd64.zip",
-            "sha256": "d7e2a986bc9706f717aca86162ee747622f1705831c2d1c720f013ba02b245a0",
-            "size": 3396662
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_windows_amd64.zip",
+            "sha256": "1cd05fe27613f0fda4c03efc92dcb23fa54c3a845025087a4b0d898aec7afec9",
+            "size": 3396902
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_windows_arm64.zip",
-            "sha256": "1f33dc9608e48506ad0b5f043e7a008fba4e88bfb159df7e4d2a91f5c037ae1d",
-            "size": 3137110
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_windows_arm64.zip",
+            "sha256": "58580ab3ea57879b5c4ec213ef122df8d63944faf85f96e01fda441bd9e6dd86",
+            "size": 3137471
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.0/traework_0.2.0_freebsd_amd64.zip",
-            "sha256": "921975e490a92fac54574cb16443f21fea563a500ea705165bc9b5238d39dd7c",
-            "size": 3409602
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/traework-v0.2.1/traework_0.2.1_freebsd_amd64.zip",
+            "sha256": "15e55f48fbc43f916d22139b878e03871515ca74e1d6144d3747c61a2a93f823",
+            "size": 3409886
           }
         ]
       }
