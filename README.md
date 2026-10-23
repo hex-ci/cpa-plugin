@@ -1,6 +1,6 @@
 # CPA 插件仓库
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**Qoder**、**QwenWork** 与 **TraeWork** 四个 OAuth Provider。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**Qoder**、**QwenWork** 与 **TraeWork** 的 OAuth Provider。
 
 ## 插件
 
