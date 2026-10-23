@@ -351,18 +351,24 @@ jobs:
           GOFLAGS: -trimpath -buildmode=c-shared
         run: |
           set -euo pipefail
+          # A stalled transfer must fail fast instead of holding the job until
+          # the step timeout: --speed-time/--speed-limit abort when throughput
+          # collapses, then --retry re-attempts within the same step.
+          CURL_OPTS=(-fsSL --connect-timeout 15 --max-time 900
+            --speed-limit 2048 --speed-time 60 --retry 5 --retry-all-errors
+            --retry-delay 5)
           # Lowest published release: the ELF osreldate tag follows the target
           # triple, and a binary tagged newer than the running kernel is
           # refused, so the oldest sysroot keeps the artifact loadable on
           # every newer FreeBSD.
-          SYSROOT_VERSION="$(curl -fsSL --retry 5 --retry-all-errors \
+          SYSROOT_VERSION="$(curl "${CURL_OPTS[@]}" \
             https://download.freebsd.org/releases/amd64/ \
             | grep -oE '1[0-9]\.[0-9]+-RELEASE' | sort -uV | head -1)"
           if [ -z "${SYSROOT_VERSION}" ]; then
             echo "no FreeBSD release sysroot published"; exit 1
           fi
           echo "FreeBSD sysroot: ${SYSROOT_VERSION}"
-          curl -fsSL --retry 5 --retry-all-errors -o /tmp/base.txz \
+          curl "${CURL_OPTS[@]}" -o /tmp/base.txz \
             "https://download.freebsd.org/releases/amd64/amd64/${SYSROOT_VERSION}/base.txz"
           sudo mkdir -p /opt/freebsd-sysroot
           sudo tar -xf /tmp/base.txz -C /opt/freebsd-sysroot
