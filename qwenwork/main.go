@@ -78,12 +78,9 @@ const (
 	providerName = "qwenwork"
 	// displayName is the human-readable plugin title shown by management clients;
 	// providerName stays the stable identifier (config keys, routes, auth files).
-	displayName   = "QwenWork"
-	authFileName  = "qwenwork.json"
-	pluginLogoURL = "https://raw.githubusercontent.com/hex-ci/cpa-plugin/main/qwenwork/assets/qwenwork.svg"
-	// QwenWork (千问办公) 单网关 gateway.qwenwork.cn，同时承载鉴权/账单/COSY 推理。
-	// 与 QoderWork 同属阿里 Qoder 底层：RSA 公钥相同、COSY 签名同构、deviceFlow 同构。
-	// 差异：单域名、明文 JSON body（无 Encode=1）、cosyVersion 1.1.18、无 PAT/jobToken 路径。
+	displayName    = "QwenWork"
+	authFileName   = "qwenwork.json"
+	pluginLogoURL  = "https://raw.githubusercontent.com/hex-ci/cpa-plugin/main/qwenwork/assets/qwenwork.svg"
 	upstreamBaseCN = "https://gateway.qwenwork.cn"
 	gatewayBaseCN  = "https://gateway.qwenwork.cn"
 	clientUA       = "qwenwork/0.1.8"

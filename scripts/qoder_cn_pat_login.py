@@ -186,7 +186,7 @@ async def main() -> int:
     ap.add_argument("--days", type=int, default=36500, help="PAT 有效期(天)，默认 100 年")
     ap.add_argument("--code-file", default=None, help="从文件读验证码(后台模式); 默认终端交互输入")
     ap.add_argument("--reuse-state", default=None, help="复用已登录 storage_state JSON，跳过短信登录直接造 PAT")
-    ap.add_argument("--out", default="./qoderwork_pat.json", help="结果输出 JSON 路径")
+    ap.add_argument("--out", default="./qoder_pat.json", help="结果输出 JSON 路径")
     ap.add_argument("--workdir", default="./qw_web", help="截图/中间产物目录")
     args = ap.parse_args()
 

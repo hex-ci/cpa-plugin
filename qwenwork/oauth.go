@@ -9,10 +9,6 @@
 //
 // Refresh (handleRefreshAuth) uses POST /api/v1/deviceToken/refresh with the
 // ory_rt_ refresh token plus target:"c".
-//
-// Reverse-engineered from the official QwenWorkCN desktop client login URL
-// (2026-09-02, live capture) — same Qoder device flow as QoderWork, but on
-// gateway.qwenwork.cn with client_id e883ade2-… and redirect_uri qwenwork-cn://.
 package main
 
 import (
@@ -254,8 +250,8 @@ func handlePollLogin(raw []byte) ([]byte, error) {
 
 // deviceExpiryUnix resolves the access-token expiry from a deviceToken
 // poll/refresh response. Poll returns both expires_at (RFC3339) and
-// expires_in; QwenWork expresses expires_in in SECONDS (e.g. 604800 = 7d),
-// unlike QoderWork (milliseconds) — detect by magnitude. Default: 30 days.
+// expires_in; QwenWork expresses expires_in in SECONDS (e.g. 604800 = 7d).
+// Default: 30 days.
 func deviceExpiryUnix(tok *deviceTokenResponse) int64 {
 	if tok.ExpiresAt != "" {
 		if t, err := time.Parse(time.RFC3339, tok.ExpiresAt); err == nil {

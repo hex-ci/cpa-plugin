@@ -1,13 +1,13 @@
 # CPA 插件仓库
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**QoderWork**、**QwenWork** 与 **TraeWork** 四个 OAuth Provider。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 插件集合。当前提供 **WorkBuddy / CodeBuddy**、**Qoder**、**QwenWork** 与 **TraeWork** 四个 OAuth Provider。
 
 ## 插件
 
 | ID | 说明 | 源码 |
 |---|---|---|
 | `workbuddy` | Tencent CodeBuddy OAuth、动态模型、executor、每日签到、专家包、积分面板、可选积分调度 | [workbuddy/](workbuddy/) |
-| `qoderwork` | QoderWork：OAuth 设备授权 + PAT 双登录（可共存）、COSY 签名推理、动态模型、每日签到、积分面板、token 保活 | [qoderwork/](qoderwork/) |
+| `qoder` | Qoder：OAuth 设备授权 + PAT 双登录（可共存）、COSY 签名推理、动态模型、每日额度领取（活动平台）、积分面板、token 保活 | [qoder/](qoder/) |
 | `qwenwork` | QwenWork：OAuth 设备授权登录、COSY 签名推理、动态模型、积分/套餐面板、token 保活（无签到/无 PAT） | [qwenwork/](qwenwork/) |
 | `traework` | TraeWork：浏览器 OAuth 登录、认证文件识别解析、动态模型目录、流式对话与工具调用、额度卡片面板、每日签到 | [traework/](traework/) |
 
@@ -35,11 +35,11 @@ CI：push / PR 全量构建（只出 artifacts）；tag `<id>-v*`（如 `traewor
 
 ```bash
 # 从 Release 下载
-unzip qoderwork_<version>_linux_amd64.zip
+unzip qoder_<version>_linux_amd64.zip
 # 扁平 plugins 目录（常见 docker 挂载）
-cp qoderwork.so /path/to/cliproxyapi/plugins/qoderwork.so
+cp qoder.so /path/to/cliproxyapi/plugins/qoder.so
 # 或平台子目录布局
-# mkdir -p plugins/linux/amd64 && cp qoderwork.so plugins/linux/amd64/
+# mkdir -p plugins/linux/amd64 && cp qoder.so plugins/linux/amd64/
 ```
 
 ```yaml
@@ -49,7 +49,7 @@ plugins:
   configs:
     workbuddy:
       enabled: true
-    qoderwork:
+    qoder:
       enabled: true
     qwenwork:
       enabled: true
@@ -67,4 +67,4 @@ CI 自动刷新，用户在商店 UI 即可一键安装/更新，无需手工下
 https://raw.githubusercontent.com/hex-ci/cpa-plugin/main/registry.json
 ```
 
-添加后在商店 UI 安装/更新 **WorkBuddy**、**QoderWork**、**QwenWork** 和 **TraeWork**。
+添加后在商店 UI 安装/更新 **WorkBuddy**、**Qoder**、**QwenWork** 和 **TraeWork**。

@@ -10,6 +10,8 @@ dist/
 # bare `go build` binaries (no extension, one per plugin dir)
 workbuddy/workbuddy
 workbuddy/workbuddy-plus
-qoderwork/qoderwork
+qoder/qoder
 qwenwork/qwenwork
 traework/traework
+
+.playwright-cli/

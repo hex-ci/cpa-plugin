@@ -1,8 +1,6 @@
 # QwenWork (千问办公) CPA 插件
 
-[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 **QwenWork（千问办公，gateway.qwenwork.cn）** Provider 插件：设备授权登录、COSY 签名推理、动态模型、积分/套餐面板、token 自动保活。
-
-千问办公（QwenWork）与 QoderWork 同属阿里 Qoder 底层（RSA 公钥相同、COSY 签名同构、device flow 同构），但差异明显：单网关域名、明文 JSON body（无 Encode=1）、cosyVersion 1.1.18、**无 PAT/jobToken 路径**。
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 **QwenWork（千问办公）** Provider 插件：设备授权登录、COSY 签名推理、动态模型、积分/套餐面板、token 自动保活。
 
 ## 功能
 

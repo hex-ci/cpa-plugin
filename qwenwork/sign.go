@@ -1,10 +1,5 @@
 // sign.go implements QwenWork's COSY request signing: RSA-wrapped AES session
-// key + AES-128-CBC encrypted identity + MD5 request signature. The algorithm
-// is the SAME Qoder scheme QoderWork uses (same RSA public key), but QwenWork
-// passes a different cosyVersion/ideVersion, a 5-field identity, and a
-// different header set (X-QwenWork-* + title-case Cosy-*). Pure-Go port of
-// Buddy2api providers/qwenwork/cosy.py (which mirrors the official 0.1.8 asar
-// generateAuthToken).
+// key + AES-128-CBC encrypted identity + MD5 request signature.
 package main
 
 import (
@@ -75,8 +70,7 @@ type cosySession struct {
 	Info         string `json:"info"`     // base64(AES-CBC(identityJSON, tempKey))
 }
 
-// cosyIdentity is the plaintext inside `info`. QwenWork carries 5 fields (no
-// organization/user_type/yx_uid/refresh_token — unlike QoderWork).
+// cosyIdentity is the plaintext inside `info`. QwenWork carries 5 fields.
 type cosyIdentity struct {
 	Name               string
 	AID                string

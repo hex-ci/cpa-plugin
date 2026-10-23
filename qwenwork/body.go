@@ -1,7 +1,5 @@
 // body.go constructs the QwenWork agent_chat_generation request body from an
-// OpenAI-style chat completion payload. QwenWork (千问办公) 走明文 JSON —— 没有
-// QoderWork 的 QoderEncoding/base64 与 baseprompt 模板；结构对齐官方 0.1.8
-// asar 与 Buddy2api 的 build_body。
+// OpenAI-style chat completion payload.
 package main
 
 import (
