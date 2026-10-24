@@ -306,7 +306,7 @@ func makePKCE() (string, string) {
 // authorization URL and stash the PKCE verifier under the returned state.
 //
 // The region comes from the request metadata ({"realm":"global"}) when the
-// caller states one, otherwise from realm_default in the plugin config.
+// caller states one, otherwise from oauth_client_mode in the plugin config.
 func handleStartLogin(raw []byte) ([]byte, error) {
 	realmName := defaultRealmName()
 	if len(raw) > 0 {

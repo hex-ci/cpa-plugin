@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -178,6 +179,14 @@ const (
 	upstreamErrPromptTooLong
 	// upstreamErrServer: 5xx — upstream fault.
 	upstreamErrServer
+	// upstreamErrQuotaExhausted: 14001/14002/14012-14014/14018/14019 — the
+	// account's balance is gone. The client never retries these, and they can
+	// arrive wrapped in a 429, so they must outrank the status-based branches.
+	upstreamErrQuotaExhausted
+	// upstreamErrTokenRejected: a bare 401 from the edge (no JSON envelope).
+	// The access token itself is refused, which only a re-login fixes; the
+	// official client refreshes once and then asks the user to sign in again.
+	upstreamErrTokenRejected
 	// upstreamErrOther: any other 4xx / business error.
 	upstreamErrOther
 )
@@ -204,6 +213,10 @@ func (k upstreamErrKind) String() string {
 		return "model_blocked"
 	case upstreamErrPromptTooLong:
 		return "prompt_too_long"
+	case upstreamErrQuotaExhausted:
+		return "quota_exhausted"
+	case upstreamErrTokenRejected:
+		return "token_rejected"
 	case upstreamErrServer:
 		return "server"
 	case upstreamErrOther:
@@ -303,6 +316,26 @@ var (
 	// scores soft_rate, the truncated one scores server. The short code
 	// survives truncation because it sits near the head.
 	upstreamBusyCodeRe = upstreamBizCodeRe(upstreamBusyCode)
+	// transientThrottleCodeRe: per-request / per-model throttle codes the 5.8.3
+	// client retries in place (14003 "model busy" plus the 6001/6002/6005/6006
+	// tps/tpm/rps/rpm family). They say nothing about the credential.
+	transientThrottleCodeRe = regexp.MustCompile(`"code"\s*:\s*"?1400[3]"?|"code"\s*:\s*"?600[1235678]"?|"code"\s*:\s*"?6000"?`)
+	// quotaExhaustedCodeRe: balance-spent codes. Checked before the 429 branch
+	// because upstream wraps some of them in a 429, and a 429 alone currently
+	// reads as "self-healing throttle".
+	contentBlockedCodeRe = upstreamBizCodeRe("11128")
+	// accountBannedCodeRe: 11141/11142 are account-level bans. 11140 is
+	// deliberately excluded — upstream reuses it on model-provider rate-limit
+	// bodies, so it stays wording-based ("request illegal").
+	accountBannedCodeRe  = regexp.MustCompile(`"code"\s*:\s*"?(1114[12])"?`)
+	quotaExhaustedCodeRe = regexp.MustCompile(`"code"\s*:\s*"?(14001|14002|14012|14013|14014|14018|14019)"?`)
+	// tokenRejectedMarkers: wordings the edge/auth layer uses when the access
+	// token itself is refused.
+	tokenRejectedMarkers = []string{
+		"session doesn't have required client",
+		"refresh token is invalid",
+		"invalid_grant",
+	}
 	// capacityQueueCodeRe matches the capacity-queue codes the upstream emits
 	// when a model has no free slot. The client treats them as a waiting
 	// state, not a failure: it polls /v2/chat/queue/status and resends the
@@ -444,10 +477,36 @@ func classifyUpstreamError(status int, body string) upstreamErrKind {
 	if bodyHasMarker(body, sessionDeadMarkers) {
 		return upstreamErrSessionDead
 	}
+	// A refused token is terminal for this credential and is not fixed by a
+	// retry: the edge answers a bare 401 (often an openresty HTML page) when the
+	// session behind the access token is gone. Recognise it before the wording
+	// probes so an HTML body cannot fall through to "other" and leave the
+	// account rotating forever.
+	if status == http.StatusUnauthorized {
+		return upstreamErrTokenRejected
+	}
+	if bodyHasMarker(body, tokenRejectedMarkers) {
+		return upstreamErrTokenRejected
+	}
+	// Balance-spent codes outrank 429: upstream wraps 14018 in a 429, and the
+	// account must go through the credit reconcile rather than look throttled.
+	if quotaExhaustedCodeRe.MatchString(body) {
+		return upstreamErrQuotaExhausted
+	}
+	// Per-request throttle codes stay in the self-healing class even when the
+	// status is a 5xx (14003 is frequently surfaced that way).
+	if transientThrottleCodeRe.MatchString(body) {
+		return upstreamErrSoftRate
+	}
 	if accountNotActivatedRe.MatchString(body) || bodyHasMarker(body, accountNotActivatedMarkers) {
 		return upstreamErrAccountNotActivated
 	}
-	if bodyHasMarker(body, accountBannedMarkers) {
+	// 11128 is the content-audit code; its wording ("request illegal") is the
+	// same sentence 11140 uses for an account ban, so the code decides.
+	if contentBlockedCodeRe.MatchString(body) {
+		return upstreamErrContentBlocked
+	}
+	if bodyHasMarker(body, accountBannedMarkers) || accountBannedCodeRe.MatchString(body) {
 		return upstreamErrAccountBanned
 	}
 	if isModelRateLimit(body) {
@@ -514,9 +573,9 @@ const (
 
 func executorErrorEffectFor(kind upstreamErrKind) executorErrorEffect {
 	switch kind {
-	case upstreamErrHardCredit:
+	case upstreamErrHardCredit, upstreamErrQuotaExhausted:
 		return executorEffectRecheckCredits
-	case upstreamErrSessionDead, upstreamErrAccountBanned:
+	case upstreamErrSessionDead, upstreamErrAccountBanned, upstreamErrTokenRejected:
 		return executorEffectDisableUntilRelogin
 	case upstreamErrAccountNotActivated:
 		return executorEffectSoftCooldown
@@ -539,6 +598,8 @@ func upstreamFaultNote(kind upstreamErrKind) string {
 		return "Session dead (12153): re-login required"
 	case upstreamErrAccountBanned:
 		return "上游封禁 (11140): re-login required"
+	case upstreamErrTokenRejected:
+		return "Session invalid (401): re-login required"
 	default:
 		return "upstream account fault: re-login required"
 	}
@@ -660,6 +721,47 @@ func jwtGivenName(accessToken string) string {
 		return ""
 	}
 	return strings.TrimSpace(claims.GivenName)
+}
+
+// jwtExpiry returns the exp claim of an access token, or the zero time when the
+// token has no readable exp.
+func jwtExpiry(accessToken string) time.Time {
+	parts := strings.Split(accessToken, ".")
+	if len(parts) < 2 {
+		return time.Time{}
+	}
+	payload := parts[1]
+	if pad := len(payload) % 4; pad != 0 {
+		payload += strings.Repeat("=", 4-pad)
+	}
+	raw, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return time.Time{}
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(raw, &claims) != nil || claims.Exp == 0 {
+		return time.Time{}
+	}
+	return time.Unix(claims.Exp, 0)
+}
+
+// accessTokenUsable reports whether the access token can still authenticate a
+// model call. A rejected refresh does not by itself mean the account is dead:
+// upstream accepts the current access token long after it stops honouring the
+// refresh token, so the request path is the only place that may disable.
+func accessTokenUsable(sa *storedAuth) bool {
+	if sa == nil {
+		return false
+	}
+	if exp := jwtExpiry(sa.Auth.AccessToken); !exp.IsZero() {
+		return time.Now().Before(exp.Add(-2 * time.Minute))
+	}
+	if sa.Auth.ExpiresAt == 0 {
+		return true // unknown: assume usable, let the request decide
+	}
+	return time.Now().Before(time.Unix(sa.Auth.ExpiresAt, 0).Add(-2 * time.Minute))
 }
 
 // labelForAuth adds [CN]/[Global] for host labels.

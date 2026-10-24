@@ -61,6 +61,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -89,12 +90,19 @@ const (
 	// Global chat/auth gateway (iss = workbuddy.ai realm). APISIX on
 	// copilot.tencent.com rejects Global JWTs with 401; must use workbuddy.ai.
 	upstreamBaseGlobal = "https://www.workbuddy.ai"
-	clientUA           = "CLI/2.63.2 CodeBuddy/2.63.2"
+	clientUA           = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
+	// clientVersion is the bundled CLI version advertised in X-IDE-Version.
+	// The desktop app ships one CLI; these two move together (5.8.3 / 2.161.0).
+	clientVersion = "2.161.0"
 	// catalogUA is the User-Agent for the catalogue request. /v3/config
 	// branches on it: only a UA carrying the "WorkBuddy/" product segment is
 	// answered with the desktop-shaped payload (the version inside the segment
 	// is ignored). The desktop client sends exactly this string.
-	catalogUA           = "WorkBuddy/5.6.2 WorkBuddy/5.6.2 CLI/2.147.0"
+	catalogUA = "WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0"
+	// catalogCLIUA is the CLI-shaped catalogue identity: no "WorkBuddy/"
+	// product segment, so the service answers with the CLI roster instead of the
+	// desktop one. Both rosters are merged (each lists models the other lacks).
+	catalogCLIUA        = "CLI/2.161.0"
 	originReferer       = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 
@@ -354,7 +362,7 @@ type registrationCapability struct {
 }
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.12.2"
+var version = "0.12.5"
 
 func wbRegistration() registration {
 	return registration{
@@ -565,8 +573,25 @@ func endpointTokenRefreshFor(sa *storedAuth) string {
 
 // backendHeaders applies auth-derived headers to a chat completion request.
 // Empty fields are signalled via the X-No-* convention used by CodeBuddy.
+// identityUserinfo renders the X-Userinfo blob the 5.8.3 client builds in
+// runIdentityHeaders: {"uin": <uid>, "owner_uin": <enterpriseId>} as base64.
+// Only org accounts carry it (the client gates it on enterpriseId/idSource).
+func identityUserinfo(sa *storedAuth) string {
+	payload := map[string]string{"uin": sa.Account.UID, "owner_uin": sa.Account.EnterpriseID}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
 func backendHeaders(req *http.Request, sa *storedAuth) {
 	commonHeaders(req)
+	// The 5.8.3 client never sends Origin/Referer on model calls (its own proxy
+	// strips `origin` before forwarding), so the chat request drops them while
+	// the OAuth/login paths keep them.
+	req.Header.Del("Origin")
+	req.Header.Del("Referer")
 	if sa.Auth.AccessToken != "" {
 		req.Header.Set("Authorization", "Bearer "+sa.Auth.AccessToken)
 	} else {
@@ -574,6 +599,11 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	}
 	if sa.Account.UID != "" {
 		req.Header.Set("X-User-Id", sa.Account.UID)
+		// Mirrors runIdentityHeaders in the client: base64 JSON identity blob the
+		// gateway uses for auditing. Only built when the account has an org.
+		if sa.Account.EnterpriseID != "" {
+			req.Header.Set("X-Userinfo", identityUserinfo(sa))
+		}
 	} else {
 		req.Header.Set("X-No-User-Id", "1")
 	}
@@ -598,9 +628,13 @@ func backendHeaders(req *http.Request, sa *storedAuth) {
 	req.Header.Set("X-Product", "SaaS")
 	// Client-identifying headers. Tencent's billing/usage backend uses these to
 	// populate the "client" (客户端) field; without them requests show as empty.
-	req.Header.Set("X-IDE-Type", "CLI")
-	req.Header.Set("X-IDE-Name", "CLI")
-	req.Header.Set("X-IDE-Version", "2.63.2")
+	req.Header.Set("X-IDE-Type", "WorkBuddy")
+	req.Header.Set("X-IDE-Name", "WorkBuddy")
+	req.Header.Set("X-IDE-Version", clientVersion)
+	// The desktop gateway call always carries these two; a request without them
+	// is not what the client produces.
+	req.Header.Set("X-Agent-Purpose", "conversation")
+	req.Header.Set("X-Private-Data", "true")
 	req.Header.Set("X-Agent-Intent", "craft")
 	// Headers the official CLI also sends on model requests (module 63355's
 	// constant table). X-Trace-ID/X-Root-Request-ID are per-request trace ids;
@@ -930,7 +964,26 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers})
 	}
 	backendHeaders(httpReq, sa)
-	go pumpUpstreamStream(httpReq, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, req.HostCallbackID)
+	// Open synchronously so a failed attempt is reported with its real HTTP
+	// status. An error frame inside a 200 stream reaches the client as a 500
+	// regardless of what the upstream said, which is how a transient 429 turned
+	// into a hard failure; returning the status here also lets the host retry
+	// the request on another credential.
+	stream, statusCode, respHeaders, errOpen := hostHTTPDoStreamWithCallback(httpReq, req.HostCallbackID)
+	if errOpen != nil {
+		cancel()
+		return nil, errOpen
+	}
+	if statusCode >= 400 {
+		payload := recordFailedStream(stream, statusCode, respHeaders, req.Model, upstreamModel, authUID, started)
+		cancel()
+		return errorEnvelopeWithStatus("http_error",
+			fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(payload, 200)), statusCode), nil
+	}
+	go func() {
+		defer cancel()
+		pumpOpenStream(stream, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID)
+	}()
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

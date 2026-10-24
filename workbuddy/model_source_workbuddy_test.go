@@ -504,8 +504,8 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 			}
 			// The catalogue is UA-scoped, so the two legs must differ in
 			// exactly the User-Agent: desktop shape first, CLI shape second.
-			if len(uas) != 2 || uas[0] != catalogUA || uas[1] != clientUA {
-				t.Fatalf("user agents = %#v, want [%q %q]", uas, catalogUA, clientUA)
+			if len(uas) != 2 || uas[0] != catalogUA || uas[1] != catalogCLIUA {
+				t.Fatalf("user agents = %#v, want [%q %q]", uas, catalogUA, catalogCLIUA)
 			}
 			if callbackID != "callback-route" {
 				t.Fatalf("callback ID = %q", callbackID)
@@ -518,14 +518,14 @@ func TestFetchWorkBuddyCatalogRoutesByJWTRealm(t *testing.T) {
 				"Accept":          "application/json",
 				"Origin":          tt.origin,
 				"Referer":         tt.origin + "/",
-				"User-Agent":      clientUA,
+				"User-Agent":      catalogCLIUA, // last leg (CLI shape) wins
 				"X-User-Id":       "uid-1",
 				"X-Enterprise-Id": "enterprise-1",
 				"X-Tenant-Id":     "enterprise-1",
 				"X-Product":       "SaaS",
-				"X-IDE-Type":      "CLI",
-				"X-IDE-Name":      "CLI",
-				"X-IDE-Version":   "2.63.2",
+				"X-IDE-Type":      "WorkBuddy",
+				"X-IDE-Name":      "WorkBuddy",
+				"X-IDE-Version":   clientVersion,
 				"X-Agent-Intent":  "craft",
 			}
 			for key, want := range wantHeaders {

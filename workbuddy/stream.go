@@ -81,54 +81,57 @@ func streamHeaders() http.Header {
 	return h
 }
 
-// pumpUpstreamStream reads the upstream SSE response in the background and
-// emits each cleaned chunk to the host stream. It closes the stream when done.
-// An emit failure (client disconnected → host closed the stream) aborts the
-// pump so we stop reading a dead upstream. cancel is invoked on every exit so
-// the underlying http request context is released promptly.
-//
-// v0.7.0: requests now route via host.http.do_stream so request-log captures
-// the outbound call and host transport policy applies. The host bridge emits
-// arbitrary 32KB chunks, so we adapt to io.Reader and keep the bufio.Scanner
-// SSE line framing unchanged.
+// pumpUpstreamStream opens the upstream SSE response and drains it into the
+// host stream, reporting a failed attempt as an error frame. It is the
+// fire-and-forget entry point used by tests and by callers that cannot report a
+// status synchronously; the executor prefers openUpstreamStream so the failure
+// reaches the host as an HTTP status (see executeStreamAsync).
 func pumpUpstreamStream(httpReq *http.Request, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, callbackID string) {
-	// Always close the host stream exactly once on every exit path.
-	closed := false
-	closeOnce := func() {
-		if closed {
-			return
-		}
-		closed = true
-		streamClose(streamID)
-	}
-	defer closeOnce()
-	if cancel != nil {
-		defer cancel()
-	}
-
 	stream, statusCode, respHeaders, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+	}()
 	if err != nil {
 		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
 		streamEmitError(streamID, fmt.Sprintf("http_error: %v", err))
 		return
 	}
-	defer stream.Close()
 	if statusCode >= 400 {
-		// Drain the error body via the same bridge so the message is complete.
-		errPayload, _ := io.ReadAll(newHostStreamReader(stream))
-		publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(errPayload))
-		if authUID != "" {
-			go reconcileByUID(authUID, statusCode, string(errPayload))
-		}
-		// See retry_after.go: the host cannot receive the upstream wait hint,
-		// so it is logged instead.
-		if hint := retryAfterHint(respHeaders); hint != "" {
-			hostLogf("warn", fmt.Sprintf("workbuddy upstream %d on auth=%s: upstream asks to wait %s",
-				statusCode, shortUID(authUID), hint))
-		}
-		streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200)))
+		payload := recordFailedStream(stream, statusCode, respHeaders, requestedModel, upstreamModel, authUID, started)
+		streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(payload, 200)))
 		return
 	}
+	pumpOpenStream(stream, streamID, sseFramed, requestedModel, upstreamModel, authUID, started, authID)
+}
+
+// recordFailedStream drains an error body, records the attempt and runs the
+// credential reconcile, then closes the stream. It returns the raw body so the
+// caller can surface it.
+func recordFailedStream(stream *hostHTTPStream, statusCode int, respHeaders http.Header, requestedModel, upstreamModel, authUID string, started time.Time) string {
+	defer stream.Close()
+	payload, _ := io.ReadAll(newHostStreamReader(stream))
+	publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
+	if authUID != "" {
+		go reconcileByUID(authUID, statusCode, string(payload))
+	}
+	// See retry_after.go: the host cannot receive the upstream wait hint,
+	// so it is logged instead.
+	if hint := retryAfterHint(respHeaders); hint != "" {
+		hostLogf("warn", fmt.Sprintf("workbuddy upstream %d on auth=%s: upstream asks to wait %s",
+			statusCode, shortUID(authUID), hint))
+	}
+	return string(payload)
+}
+
+// pumpOpenStream copies an already-opened 2xx upstream stream to the host,
+// emitting one cleaned chunk per SSE event, then closes both. A 2xx response
+// that produces no usable event is reported as an error frame: the client would
+// otherwise see an empty successful stream.
+func pumpOpenStream(stream *hostHTTPStream, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string) {
+	defer stream.Close()
+	defer streamClose(streamID)
 	collector := &sseUsageCollector{}
 	scanner := bufio.NewScanner(newHostStreamReader(stream))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)

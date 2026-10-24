@@ -7,6 +7,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -644,4 +646,82 @@ func mustAtoi(t *testing.T, s string) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+// Codes the 5.8.3 client distinguishes and the old table did not. Each case is
+// taken from a real production body (see the error_events table).
+func TestClassifyWorkBuddy58Codes(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   upstreamErrKind
+	}{
+		{"bare edge 401 html", 401, "<html><head><title>401 Authorization Required</title></head></html>", upstreamErrTokenRejected},
+		{"401 with json code", 401, `{"code":401,"msg":"unauthorized"}`, upstreamErrTokenRejected},
+		{"12153 refresh rejected still session_dead", 401,
+			`{"code":12153,"msg":"refresh token failed: 400 Bad Request: invalid_grant: Session doesn't have required client"}`, upstreamErrSessionDead},
+		{"revoked refresh wording", 400, `{"code":12153,"msg":"refresh token is invalid"}`, upstreamErrSessionDead},
+		{"14018 wrapped in 429 is quota, not throttle", 429, `{"code":14018,"msg":"credits exhausted"}`, upstreamErrQuotaExhausted},
+		{"14001 quota", 400, `{"code":14001,"msg":"usage limit exceeded"}`, upstreamErrQuotaExhausted},
+		{"14019 quota", 200, `{"code":14019,"msg":"no token budget"}`, upstreamErrQuotaExhausted},
+		{"14003 model busy on 429", 429, `{"code":14003,"msg":"too many requests"}`, upstreamErrSoftRate},
+		{"14003 model busy on 500", 500, `{"code":14003,"msg":"too many requests"}`, upstreamErrSoftRate},
+		{"6001 tps throttle", 429, `{"code":6001,"msg":"tps limit"}`, upstreamErrSoftRate},
+		{"6005 rps throttle", 429, `{"code":6005,"msg":"rps limit"}`, upstreamErrSoftRate},
+		{"6004 stays model-level", 429, `{"code":6004,"msg":"usage exceeds frequency limit"}`, upstreamErrModelRateLimit},
+		{"11128 audit stays content_blocked", 400, `{"code":11128,"msg":"request illegal"}`, upstreamErrContentBlocked},
+	}
+	for _, c := range cases {
+		if got := classifyUpstreamError(c.status, c.body); got != c.want {
+			t.Errorf("%s: classify = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The new kinds must reach the right lifecycle effect: a refused token takes the
+// account out of rotation, a spent balance rechecks credits, a throttle changes
+// nothing.
+func TestExecutorEffectsForNewKinds(t *testing.T) {
+	if got := executorErrorEffectFor(upstreamErrTokenRejected); got != executorEffectDisableUntilRelogin {
+		t.Fatalf("token_rejected effect = %v", got)
+	}
+	if got := executorErrorEffectFor(upstreamErrQuotaExhausted); got != executorEffectRecheckCredits {
+		t.Fatalf("quota_exhausted effect = %v", got)
+	}
+	if got := executorErrorEffectFor(upstreamErrSoftRate); got != executorEffectIgnore {
+		t.Fatalf("soft_rate effect = %v", got)
+	}
+	if note := upstreamFaultNote(upstreamErrTokenRejected); !strings.Contains(note, "re-login") {
+		t.Fatalf("note = %q", note)
+	}
+}
+
+// A rejected refresh must not take a working account out of rotation: the
+// access token keeps authenticating model calls long after the refresh token
+// stops working.
+func TestAccessTokenUsable(t *testing.T) {
+	mk := func(exp int64) string {
+		payload, _ := json.Marshal(map[string]any{"exp": exp, "sub": "u"})
+		return "h." + base64.RawURLEncoding.EncodeToString(payload) + ".s"
+	}
+	now := time.Now()
+	cases := []struct {
+		name string
+		sa   *storedAuth
+		want bool
+	}{
+		{"nil auth", nil, false},
+		{"exp in 27 days", &storedAuth{Auth: storedTokens{AccessToken: mk(now.Add(27 * 24 * time.Hour).Unix())}}, true},
+		{"exp in 1 minute", &storedAuth{Auth: storedTokens{AccessToken: mk(now.Add(time.Minute).Unix())}}, false},
+		{"exp yesterday", &storedAuth{Auth: storedTokens{AccessToken: mk(now.Add(-24 * time.Hour).Unix())}}, false},
+		{"opaque token, expiry known", &storedAuth{Auth: storedTokens{AccessToken: "opaque", ExpiresAt: now.Add(time.Hour).Unix()}}, true},
+		{"opaque token, expiry passed", &storedAuth{Auth: storedTokens{AccessToken: "opaque", ExpiresAt: now.Add(-time.Hour).Unix()}}, false},
+		{"opaque token, expiry unknown", &storedAuth{Auth: storedTokens{AccessToken: "opaque"}}, true},
+	}
+	for _, c := range cases {
+		if got := accessTokenUsable(c.sa); got != c.want {
+			t.Errorf("%s: accessTokenUsable = %v, want %v", c.name, got, c.want)
+		}
+	}
 }

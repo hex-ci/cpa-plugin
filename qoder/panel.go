@@ -189,17 +189,17 @@ func buildDashboardEx(force, fetchCredits bool) map[string]any {
 		out[i].Selected = out[i].AuthID == activeID
 	}
 	resp := map[string]any{
-		"accounts":       out,
-		"active_auth":    activeID,
-		"checkin_auto":   auto,
-		"lifecycle_auto": lifecycleEnabled(),
-		"queue_wait":     currentConfig().QueueWait,
-		"cosy_version":   cosyVersion(),
-		"realm_default":  defaultRealmName(),
-		"schedule":       []string{"10:00"}, // check-in window, China time
-		"server_time":    time.Now().Format("2006-01-02 15:04:05"),
-		"summary":        sum,
-		"model_status":   modelReadiness(),
+		"accounts":          out,
+		"active_auth":       activeID,
+		"checkin_auto":      auto,
+		"lifecycle_auto":    lifecycleEnabled(),
+		"queue_wait":        currentConfig().QueueWait,
+		"cosy_version":      cosyVersion(),
+		"oauth_client_mode": defaultRealmName(),
+		"schedule":          []string{"10:00"}, // check-in window, China time
+		"server_time":       time.Now().Format("2006-01-02 15:04:05"),
+		"summary":           sum,
+		"model_status":      modelReadiness(),
 	}
 	if len(life) > 0 {
 		resp["lifecycle"] = life

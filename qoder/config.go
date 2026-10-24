@@ -30,8 +30,10 @@ type pluginConfig struct {
 	// DesensitizeTerms is nil for the built-in list; a non-nil empty slice is
 	// an explicitly empty list (obfuscation enabled but nothing blocked).
 	DesensitizeTerms *[]string
-	RealmDefault     string // cn | global
-	Scheduler        string // off | credits
+	// OAuthClientMode picks which realm's OAuth client a login uses when the
+	// caller does not state a realm: cn (qoder.com.cn) or global (qoder.com).
+	OAuthClientMode string // cn | global
+	Scheduler       string // off | credits
 
 	CheckinAuto     bool
 	TokenKeepalive  bool
@@ -63,7 +65,7 @@ func defaultPluginConfig() pluginConfig {
 		CosyVersion:     defaultCosyVersion,
 		DesktopVersion:  defaultDesktopVersion,
 		CampaignCheckin: true,
-		RealmDefault:    realmCN,
+		OAuthClientMode: realmCN,
 		Scheduler:       schedulerModeOff,
 		CheckinAuto:     true,
 		// Token keepalive is on by default: Qoder's dt-/drt- pair goes stale
@@ -104,7 +106,7 @@ func cosyVersion() string {
 }
 
 // defaultRealmName returns the region used when an import does not state one.
-func defaultRealmName() string { return currentConfig().RealmDefault }
+func defaultRealmName() string { return currentConfig().OAuthClientMode }
 
 // loadPluginConfig parses and validates one config_yaml document.
 func loadPluginConfig(raw []byte) (pluginConfig, error) {
@@ -187,8 +189,13 @@ func (c *pluginConfig) apply(key string, val *yaml.Node) error {
 	switch key {
 	case "cosy_version":
 		return decodeString(val, &c.CosyVersion)
+	case "oauth_client_mode":
+		return decodeString(val, &c.OAuthClientMode)
 	case "realm_default":
-		return decodeString(val, &c.RealmDefault)
+		// Previous name. Still accepted so an existing config keeps its value;
+		// drop it once every deployment has moved to oauth_client_mode.
+		hostLogf("warn", "qoder config: realm_default is deprecated, rename it to oauth_client_mode")
+		return decodeString(val, &c.OAuthClientMode)
 	case "scheduler_mode":
 		return decodeString(val, &c.Scheduler)
 	case "desktop_version":
@@ -329,11 +336,11 @@ func (c *pluginConfig) validate() error {
 	if len(c.CosyVersion) > 32 || strings.ContainsAny(c.CosyVersion, " \t\n") {
 		return fmt.Errorf("config_yaml: cosy_version %q is not a version string", c.CosyVersion)
 	}
-	switch strings.ToLower(c.RealmDefault) {
+	switch strings.ToLower(c.OAuthClientMode) {
 	case realmCN, realmGlobal:
-		c.RealmDefault = strings.ToLower(c.RealmDefault)
+		c.OAuthClientMode = strings.ToLower(c.OAuthClientMode)
 	default:
-		return fmt.Errorf("config_yaml: realm_default must be cn or global, got %q", c.RealmDefault)
+		return fmt.Errorf("config_yaml: oauth_client_mode must be cn or global, got %q", c.OAuthClientMode)
 	}
 	switch c.Scheduler {
 	case schedulerModeOff, schedulerModeCredits:

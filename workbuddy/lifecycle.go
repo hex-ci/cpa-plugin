@@ -76,11 +76,11 @@ func disableAuth(authIndex, authID string, sa *storedAuth, cr *creditsSummary, r
 	defer mu.Unlock()
 
 	note := displayNote(sa, cr, true)
-	if reason != "" && !strings.Contains(note, reason) {
-		// keep note short; reason only if room
-		if len(note)+len(reason) < 75 {
-			note = note + " · " + reason
-		}
+	if reason != "" {
+		// A fault reason is the whole story: the credit wording next to it is
+		// either unknown or misleading ("积分未知"), and the panel keys the
+		// re-login hint off this text.
+		note = reason
 	}
 	if lifecycleStateUnchanged(authID, true, note) {
 		return nil
@@ -510,17 +510,20 @@ func reconcileAfterExecutorErrorAsync(authID string) {
 func applyFaultLifecycleEffect(authID string, kind upstreamErrKind, status int, body string) {
 	idx, id := resolveAuthIndexAndID(authID)
 	if idx == "" {
+		hostLogf("warn", fmt.Sprintf("workbuddy %s: auth %q not resolvable, fault effect skipped", kind.String(), shortUID(authID)))
 		return
 	}
 	switch kind {
-	case upstreamErrSessionDead, upstreamErrAccountBanned:
-		sa, phys, err := reconcileHostAuthGetBundle(idx)
+	case upstreamErrSessionDead, upstreamErrAccountBanned, upstreamErrTokenRejected:
+		sa, _, err := reconcileHostAuthGetBundle(idx)
 		if err != nil || sa == nil {
+			hostLogf("warn", fmt.Sprintf("workbuddy %s: auth bundle for %s unreadable: %v", kind.String(), shortUID(authID), err))
 			return
 		}
-		if phys != nil && phys.Disabled {
-			return
-		}
+		// No early return for an already-disabled file: the host disables a
+		// credential as soon as it sees the refusal, and returning here would
+		// leave the host's generic note in place instead of the re-login hint
+		// the panel and reenableBlockedByNote depend on.
 		// Credits are intentionally NOT fetched: this is a fault disable, and
 		// passing nil keeps the note free of credit wording that would read as
 		// an exhaustion disable on the panel.

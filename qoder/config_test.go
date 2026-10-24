@@ -13,8 +13,8 @@ func TestConfigDefaults(t *testing.T) {
 	if c.CosyVersion != defaultCosyVersion {
 		t.Fatalf("cosy_version = %q, want %q", c.CosyVersion, defaultCosyVersion)
 	}
-	if c.RealmDefault != realmCN {
-		t.Fatalf("realm_default = %q, want cn", c.RealmDefault)
+	if c.OAuthClientMode != realmCN {
+		t.Fatalf("oauth_client_mode = %q, want cn", c.OAuthClientMode)
 	}
 	if !c.CheckinAuto || !c.TokenKeepalive || !c.LifecycleAuto || !c.QueueWait {
 		t.Fatalf("boolean defaults = %#v, want them all enabled", c)
@@ -30,7 +30,7 @@ func TestConfigDefaults(t *testing.T) {
 func TestConfigParsesFullDocument(t *testing.T) {
 	doc := []byte(`
 cosy_version: "1.2.3"
-realm_default: global
+oauth_client_mode: global
 scheduler_mode: credits
 checkin_auto: false
 token_keepalive: false
@@ -56,7 +56,7 @@ models:
 	if err != nil {
 		t.Fatalf("loadPluginConfig: %v", err)
 	}
-	if c.CosyVersion != "1.2.3" || c.RealmDefault != realmGlobal || c.Scheduler != schedulerModeCredits {
+	if c.CosyVersion != "1.2.3" || c.OAuthClientMode != realmGlobal || c.Scheduler != schedulerModeCredits {
 		t.Fatalf("scalars = %#v", c)
 	}
 	if c.CheckinAuto || c.TokenKeepalive || c.LifecycleAuto || c.QueueWait {
@@ -87,7 +87,7 @@ func TestConfigAcceptsYAMLBoolSpellings(t *testing.T) {
 
 func TestConfigRejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
-		"bad realm":         "realm_default: mars",
+		"bad realm":         "oauth_client_mode: mars",
 		"bad scheduler":     "scheduler_mode: fastest",
 		"bad body mode":     "model_list_body: gzip",
 		"zero queue wait":   "queue_max_wait: 0",
@@ -128,5 +128,17 @@ func TestConfigIgnoresHostOwnedKeys(t *testing.T) {
 	}
 	if c.CosyVersion != defaultCosyVersion {
 		t.Fatalf("cosy_version = %q, want the default", c.CosyVersion)
+	}
+}
+
+// The previous name must keep working so an existing deployment does not lose
+// its configured realm when it renames the key later.
+func TestConfigAcceptsDeprecatedRealmKey(t *testing.T) {
+	c, err := loadPluginConfig([]byte("realm_default: global"))
+	if err != nil {
+		t.Fatalf("loadPluginConfig: %v", err)
+	}
+	if c.OAuthClientMode != realmGlobal {
+		t.Fatalf("oauth_client_mode = %q, want global via realm_default", c.OAuthClientMode)
 	}
 }

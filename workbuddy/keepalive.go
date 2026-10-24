@@ -143,13 +143,21 @@ func refreshOneAuthUnlockedWithCallback(authIndex, authID, callbackID string) (s
 	data, raw, status, err := refreshCallWithCallback(sa, callbackID)
 	if err != nil {
 		if isSessionDeadError(string(raw)) || isSessionDeadError(err.Error()) {
-			// Upstream killed the offline session: refresh token is dead and
-			// every API call for this account will 401. Flag disabled so the
-			// scheduler stops routing traffic to it until manual re-login.
+			// A rejected refresh token does not mean the account is done: the
+			// access token stays valid for weeks and keeps authenticating model
+			// calls. Disabling here would take a working account out of
+			// rotation — the request path is what decides, on a real 401.
+			if accessTokenUsable(sa) {
+				return "refresh-rejected", fmt.Errorf(
+					"refresh token rejected (12153) but access token still valid until %s: kept enabled",
+					jwtExpiry(sa.Auth.AccessToken).Local().Format(time.RFC3339))
+			}
+			// Access token has expired too: refresh is the only way back, so the
+			// credential is unusable until a manual re-login.
 			if derr := markSessionDead(authIndex, authID, sa); derr != nil {
 				return "session-dead", fmt.Errorf("session dead; flag failed: %v", derr)
 			}
-			return "session-dead", fmt.Errorf("session dead (12153): flagged disabled")
+			return "session-dead", fmt.Errorf("session dead (12153): access token expired, flagged disabled")
 		}
 		return "failed", fmt.Errorf("refresh rejected (HTTP %d): %s", status, truncateRedacted(err.Error(), 120))
 	}

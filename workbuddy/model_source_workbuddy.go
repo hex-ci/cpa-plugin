@@ -565,7 +565,7 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 	}
 
 	desktopModels, desktopErr := fetchV3(catalogUA)
-	cliModels, cliErr := fetchV3("")
+	cliModels, cliErr := fetchV3(catalogCLIUA)
 
 	var v3Models []modelFacts
 	v3OK := false
@@ -637,7 +637,11 @@ func fetchWorkBuddyCatalog(sa *storedAuth, callbackID string, do modelHTTPDo) (w
 		// The v3 catalogue alone. On CN this is the fallback shape for an
 		// account without legacy entitlement (measured 401 for a personal
 		// account with a valid token); on Global it is the only shape.
-		logModelSourceDegrade(realm, "legacy endpoint unavailable", legacyErr)
+		// The legacy /console route is a console-cookie family: a Bearer token
+		// gets an APISIX 401 there by design (the 5.8.3 client never calls it
+		// with a token). Log at debug so the expected 401 stops looking like a
+		// degraded catalogue.
+		logModelSourceDebug(realm, "legacy endpoint unavailable", legacyErr)
 		return workBuddyCatalog{Realm: realm, Endpoint: v3Kind, Models: v3Models}, nil
 	case legacyOK:
 		logModelSourceDegrade(realm, "v3 endpoint unavailable", v3Err)
@@ -692,6 +696,19 @@ func unionModelFacts(primary, secondary []modelFacts) []modelFacts {
 // turned one permanent deployment fact (e.g. a route that only exists on one
 // realm) into a warning on every refresh. The per-account error codes in
 // model_status remain the live diagnostic surface.
+// logModelSourceDebug is the same memoised log at debug level, for expected
+// conditions that must not read as degradation.
+func logModelSourceDebug(realm workBuddyRealm, reason string, cause error) {
+	if cause == nil {
+		return
+	}
+	key := "debug|" + string(realm) + "|" + reason
+	if _, loaded := modelSourceDebugLogged.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	hostLogf("debug", fmt.Sprintf("workbuddy model catalog %s: %s (%v)", realm, reason, cause))
+}
+
 func logModelSourceDegrade(realm workBuddyRealm, reason string, cause error) {
 	if cause == nil {
 		return
@@ -705,6 +722,9 @@ func logModelSourceDegrade(realm workBuddyRealm, reason string, cause error) {
 
 // modelSourceDegradeLogged tracks the (realm, reason) pairs already reported.
 var modelSourceDegradeLogged sync.Map
+
+// modelSourceDebugLogged tracks the expected-condition pairs already reported.
+var modelSourceDebugLogged sync.Map
 
 // workBuddyRealmFromAccessToken decodes unverified JWT routing facts only.
 func workBuddyRealmFromAccessToken(accessToken string) (workBuddyRealm, error) {

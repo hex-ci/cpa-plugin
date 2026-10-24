@@ -343,7 +343,7 @@ func wbRegistration() registration {
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "cosy_version", Type: pluginapi.ConfigFieldTypeString, Description: "COSY protocol version, sent as cosy-version and inside the signature payload. Track the official CLI version (default 1.1.75)."},
-				{Name: "realm_default", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{realmCN, realmGlobal}, Description: "Region for new imports: cn (qoder.com.cn) or global (qoder.com). Stored per credential; existing accounts keep their own realm."},
+				{Name: "oauth_client_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{realmCN, realmGlobal}, Description: "OAuth login channel for logins and imports that do not state a realm: cn (qoder.com.cn OAuth client, default) or global (qoder.com OAuth client). Stored per credential; existing accounts keep their own realm."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (prefer the account with the most remaining credits)."},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Daily check-in at 10:00 China time (default true). Skipped where the region has no check-in endpoint."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Refresh access tokens daily at 22:00 local time (default true)."},

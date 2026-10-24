@@ -48,7 +48,7 @@ plugins:
     qoder:
       enabled: true
       # 以下全部可省略，省略即用默认值
-      realm_default: cn          # cn | global，新导入账号的默认区
+      oauth_client_mode: cn      # cn | global，登录/导入未指定区域时用哪家 OAuth 客户端
       cosy_version: "1.1.75"     # 跟随官方 CLI 版本
       queue_wait: true           # 10605 模型排队时按 retryAfterSeconds 等待
       queue_max_wait: 600

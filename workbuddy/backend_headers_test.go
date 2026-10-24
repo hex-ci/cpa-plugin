@@ -16,10 +16,12 @@ func TestBackendHeadersAddsClientIdentity(t *testing.T) {
 
 	first := makeHeaders()
 	for name, want := range map[string]string{
-		"X-IDE-Type":     "CLI",
-		"X-IDE-Name":     "CLI",
-		"X-IDE-Version":  "2.63.2",
-		"X-Agent-Intent": "craft",
+		"X-IDE-Type":      "WorkBuddy",
+		"X-IDE-Name":      "WorkBuddy",
+		"X-IDE-Version":   clientVersion,
+		"X-Agent-Intent":  "craft",
+		"X-Agent-Purpose": "conversation",
+		"X-Private-Data":  "true",
 	} {
 		if got := first.Get(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
