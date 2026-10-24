@@ -368,7 +368,7 @@ function progressHTML(c, disabled){
   // total uses size when known; remain = spendable, used = cycle spend.
   // Check-in adds packs → size/remain go UP (grant). Chat spend → used goes UP, remain DOWN.
   if(!c){
-    if(disabled)return '<div class="pb"><div class="pb-label"><span>可用积分</span><span>-</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>';
+    if(disabled)return '<div class="pb"><div class="pb-label"><span>已禁用</span><span>不参与调度</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>';
     return '<div class="pb"><div class="pb-label"><span>可用积分</span><span class="spin"></span>加载中…</span></div><div class="pb-track"><div class="pb-bar" style="width:0%"></div></div></div>';
   }
   const remain=c.total_remain||0, used=c.total_used||0;
@@ -422,9 +422,9 @@ function card(a){
   // Global: no check-in either (growth/check-in are CN-personal features).
   // CN: 签到 button.
   let actionHTML;
-  if(isEnt){
-    actionHTML='';
-  }else if(isGlobal){
+  // Disabled accounts cannot authenticate: a check-in on one only yields
+  // "签到失败", so the button goes away with the rest of the actions.
+  if(isEnt || isGlobal || disabled){
     actionHTML='';
   }else{
     const checked=ci.today_checked_in;
@@ -436,14 +436,18 @@ function card(a){
   const selectBtn=selected
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
-  const refreshBtn=`<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
+  const refreshBtn=disabled
+    ? ""
+    : `<button class="sec" data-action="refresh" data-auth-index="${esc(a.auth_index)}" title="刷新积分">刷新</button>`;
   const planLabel=plan==="enterprise"?"企业版":(a.plan||"-");
   const badges=(selected?`<span class="badge" style="background:var(--acc-ring);color:var(--acc);border-color:var(--acc)">使用中</span>`:"")+(disabled?`<span class="badge disabled">已禁用</span>`:"")+(exhausted?`<span class="badge exhausted">耗尽</span>`:"")+regionBadge+`<span class="badge ${plan}">${esc(planLabel)}</span>`;
   return `<div class="card${selected?" selected":""}" data-region="${region}" data-auth="${esc(a.auth_index)}">
   <h2><span class="card-name" title="${esc(displayName)}">${esc(displayName)}</span><span class="card-badges">${badges}</span></h2>
   <div class="uid">${esc(a.uid||"")} · ${esc(a.name||"")}</div>
   ${progressHTML(cr, disabled)}
-  ${a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:""}
+  ${disabled
+    ? (a.note?`<div class="row"><span class="k">禁用原因</span><span class="v">${esc(a.note)}</span></div>`:"")
+    : (a.error?`<div class="row"><span class="k">错误</span><span class="v err">${esc(a.error)}</span></div>`:"")}
   <div class="actions">${selectBtn}${refreshBtn}${actionHTML}</div>
   </div>`;
 }
@@ -457,7 +461,9 @@ let authFailUntil=0;
 // Lazy-load: fetch credits for all cards that lack them, concurrently.
 // Each card fetches independently; failed ones retry once after 2s.
 function lazyLoadCredits(accounts){
-  const need=accounts.filter(a=>!a.credits&&!a.error);
+  // Disabled credentials cannot answer the billing endpoint (401), so asking
+  // only produced an error line the operator cannot act on.
+  const need=accounts.filter(a=>!a.credits&&!a.error&&!a.disabled);
   if(!need.length) return;
   need.forEach(a=>{
     const idx=a.auth_index;
@@ -913,10 +919,12 @@ async function checkinAll(btn){
     const fail=Number(s.fail??rs.filter(x=>x.error).length)||0;
     const skippedGlobal=Number(s.skipped_global||0);
     const skippedEnt=Number(s.skipped_enterprise||0);
+    const skippedDisabled=Number(s.skipped_disabled||0);
     const eligible=Number(s.eligible??(ok+fail))||0;
     const detailParts=[];
     if(skippedGlobal) detailParts.push("跳过 Global "+skippedGlobal);
     if(skippedEnt) detailParts.push("跳过企业版 "+skippedEnt);
+    if(skippedDisabled) detailParts.push("跳过已禁用 "+skippedDisabled);
     if(already) detailParts.push("今日已签 "+already);
     if(eligible) detailParts.push("待签 "+eligible);
     const detail=detailParts.join(" · ");

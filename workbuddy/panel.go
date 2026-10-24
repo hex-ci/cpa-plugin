@@ -20,22 +20,26 @@ import (
 
 // wbAccount is one row of the dashboard.
 type wbAccount struct {
-	AuthIndex  string          `json:"auth_index"`
-	AuthID     string          `json:"auth_id,omitempty"`
-	Name       string          `json:"name"`
-	Label      string          `json:"label"`
-	Nickname   string          `json:"nickname"`
-	UID        string          `json:"uid"`
-	Region     string          `json:"region"`               // "cn" or "global"
-	Enterprise bool            `json:"enterprise,omitempty"` // enterpriseId bound at login
-	Plan       string          `json:"plan"`
-	Status     string          `json:"status"`
-	Disabled   bool            `json:"disabled"`
-	Exhausted  bool            `json:"exhausted"`
-	Selected   bool            `json:"selected"` // panel active routing card
-	Credits    *creditsSummary `json:"credits,omitempty"`
-	Checkin    *checkinSummary `json:"checkin,omitempty"`
-	Error      string          `json:"error,omitempty"`
+	AuthIndex  string `json:"auth_index"`
+	AuthID     string `json:"auth_id,omitempty"`
+	Name       string `json:"name"`
+	Label      string `json:"label"`
+	Nickname   string `json:"nickname"`
+	UID        string `json:"uid"`
+	Region     string `json:"region"`               // "cn" or "global"
+	Enterprise bool   `json:"enterprise,omitempty"` // enterpriseId bound at login
+	Plan       string `json:"plan"`
+	Status     string `json:"status"`
+	Disabled   bool   `json:"disabled"`
+	Exhausted  bool   `json:"exhausted"`
+	Selected   bool   `json:"selected"` // panel active routing card
+	// Note is the persisted auth-file note: for a disabled account it is the
+	// only record of why (fault disable, exhaustion), so the panel can show a
+	// reason instead of an upstream error.
+	Note    string          `json:"note,omitempty"`
+	Credits *creditsSummary `json:"credits,omitempty"`
+	Checkin *checkinSummary `json:"checkin,omitempty"`
+	Error   string          `json:"error,omitempty"`
 }
 
 type modelStatus struct {
@@ -69,6 +73,13 @@ var modelStatePriority = map[modelReadinessState]int{
 }
 
 var panelHostAuthList = hostAuthList
+
+// panelHostAuthGetBundle and panelAccountDetails are seams: the dashboard's
+// decision not to query a disabled credential is only observable with them.
+var (
+	panelHostAuthGetBundle = hostAuthGetBundle
+	panelAccountDetails    = cachedAccountDetailsWithCallback
+)
 
 func buildModelStatus(files []pluginapi.HostAuthFileEntry) modelStatus {
 	runtime := activeModelRuntime.Load()
@@ -164,7 +175,7 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 				Status:    f.Status,
 				Disabled:  f.Disabled,
 			}
-			sa, phys, err := hostAuthGetBundle(f.AuthIndex)
+			sa, phys, err := panelHostAuthGetBundle(f.AuthIndex)
 			if err != nil {
 				acct.Error = "load auth: " + err.Error()
 				out[i] = acct
@@ -181,8 +192,15 @@ func buildDashboardExWithCallback(force, fetchCredits bool, callbackID string) m
 			acct.UID = sa.Account.UID
 			acct.Region = accountRegion(sa)
 			acct.Enterprise = isEnterpriseAccount(sa)
-			if fetchCredits {
-				plan, ci, cr, errs := cachedAccountDetailsWithCallback(f.ID, sa, force, callbackID)
+			if phys != nil {
+				acct.Note = parseNoteFromAuthJSON(phys.JSON)
+			}
+			// A disabled credential cannot answer the billing endpoint: the
+			// request comes back 401 and the panel rendered that as "错误 /
+			// 请求失败" next to a "已禁用" badge. Show the stored reason and the
+			// last cached balance instead of an error the operator cannot act on.
+			if fetchCredits && !acct.Disabled {
+				plan, ci, cr, errs := panelAccountDetails(f.ID, sa, force, callbackID)
 				acct.Plan = plan
 				acct.Checkin = ci
 				acct.Credits = cr

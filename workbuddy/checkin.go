@@ -272,7 +272,7 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 
 	// Summary counters (field names are a panel contract — panel.html
 	// checkinAll reads success/already/fail/skipped_global/eligible).
-	successN, failN, alreadyN, globalN, entN, eligibleN := 0, 0, 0, 0, 0, 0
+	successN, failN, alreadyN, globalN, entN, disabledN, eligibleN := 0, 0, 0, 0, 0, 0, 0
 	for _, out := range results {
 		if out == nil {
 			continue
@@ -292,6 +292,9 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 		case "enterprise":
 			entN++
 			continue
+		case "disabled":
+			disabledN++
+			continue
 		}
 		eligibleN++
 		if out["success"] == true {
@@ -309,6 +312,7 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 			"already":            alreadyN,
 			"skipped_global":     globalN,
 			"skipped_enterprise": entN,
+			"skipped_disabled":   disabledN,
 			"fail":               failN,
 			"attempted":          eligibleN,
 		},
@@ -326,6 +330,20 @@ func handleManualCheckinWithCallback(req pluginapi.ManagementRequest, callbackID
 // merge into the previous entry so credits/plan survive.
 func checkinOneAccountWithCallback(f pluginapi.HostAuthFileEntry, callbackID string) map[string]any {
 	out := map[string]any{"auth_index": f.AuthIndex}
+
+	// A disabled credential cannot authenticate, so a check-in call would only
+	// produce "签到失败" on the panel. Answered before any host lookup.
+	if f.Disabled {
+		out["nickname"] = f.Label
+		if strings.TrimSpace(out["nickname"].(string)) == "" {
+			out["nickname"] = f.Name
+		}
+		out["success"] = false
+		out["skipped"] = true
+		out["reason"] = "disabled"
+		out["message"] = "账号已禁用，不参与签到"
+		return out
+	}
 
 	sa, err := hostAuthGet(f.AuthIndex)
 	if err != nil {

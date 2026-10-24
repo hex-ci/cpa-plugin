@@ -203,6 +203,15 @@ func buildAuthFileJSON(physical []byte, sa *storedAuth, disabled bool, note stri
 			return nil, fmt.Errorf("parse existing auth json: %w", err)
 		}
 	}
+	// A fault note (re-login required / banned) is the only record of why an
+	// account is disabled, and every writer here rebuilds the file from scratch.
+	// Downgrading it to the credits wording would erase the reason the panel and
+	// the re-enable gate depend on, so the fault note wins while disabled.
+	if disabled {
+		if existing := parseNoteFromAuthJSON(physical); existing != "" && reenableBlockedByNote(existing) {
+			note = existing
+		}
+	}
 	out["type"] = providerName
 	out["provider"] = providerName
 	out["logo"] = pluginLogoURL

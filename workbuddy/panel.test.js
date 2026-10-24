@@ -510,7 +510,8 @@ test("progressHTML distinguishes unloaded disabled accounts from pending loads",
   const disabled = context.progressHTML(null, true);
   assert.doesNotMatch(disabled, /加载中/);
   assert.doesNotMatch(disabled, /class="spin"/);
-  assert.match(disabled, /<span>-<\/span>/);
+  assert.match(disabled, /已禁用/);
+  assert.doesNotMatch(disabled, /可用积分/);
 });
 
 // The catalogue state rides the DOM as a class on #modelStatus (.model-status
@@ -537,4 +538,43 @@ test("panel CSS keeps model-status state classes free of layout collisions", () 
   }
   assert.doesNotMatch(html, /class="loading"/, "placeholders must not reuse a state class name");
   assert.match(html, /class="grid-hint"/);
+});
+
+test("disabled account card offers no actions and shows its disable reason", () => {
+  const { context } = loadPanel();
+  const html = context.card({
+    auth_index: "idx-1",
+    name: "workbuddy-dead.json",
+    uid: "u-1",
+    region: "cn",
+    plan: "free",
+    disabled: true,
+    note: "Session revoked (401): re-login required",
+    error: "请求失败",
+  });
+  assert.match(html, /已禁用/);
+  assert.match(html, /Session revoked \(401\): re-login required/);
+  assert.doesNotMatch(html, /请求失败/);
+  assert.doesNotMatch(html, /data-action="refresh"/);
+  assert.doesNotMatch(html, /data-action="checkin"/);
+  assert.doesNotMatch(html, /data-action="select"/);
+});
+
+test("lazyLoadCredits never queries a disabled account", async () => {
+  const requests = [];
+  const { context } = loadPanel({
+    sessionEntries: [["workbuddy-mgmt-key", "k"]],
+    fetch: async (url) => {
+      requests.push(String(url));
+      return fakeResponse(200, "application/json", JSON.stringify({ accounts: [] }));
+    },
+  });
+  context.lastAccounts = [];
+  context.lazyLoadCredits([
+    { auth_index: "dead", disabled: true },
+    { auth_index: "live", disabled: false },
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(requests.some((u) => u.includes("auth_index=live")), "live account should be queried");
+  assert.ok(!requests.some((u) => u.includes("auth_index=dead")), "disabled account must not be queried");
 });
