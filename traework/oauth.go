@@ -1077,6 +1077,19 @@ func handleRefreshAuth(request []byte) ([]byte, error) {
 	if err != nil {
 		return errorEnvelope("refresh_failed", err.Error()), nil
 	}
+	applyExchangeResult(sa, res)
+
+	next := nextRefreshTime(sa.ExpiresAt)
+	return okEnvelope(pluginapi.AuthRefreshResponse{
+		Auth:             toAuthData(sa, req.Metadata),
+		NextRefreshAfter: next,
+	}), nil
+}
+
+// applyExchangeResult folds a token exchange into the stored record. Shared by
+// the host-driven refresh and the in-process one the read paths use, so the two
+// cannot drift on expiry or identity handling.
+func applyExchangeResult(sa *storedAuth, res *exchangeResult) {
 	sa.AccessToken = res.Token
 	if strings.TrimSpace(res.RefreshToken) != "" {
 		sa.RefreshToken = res.RefreshToken
@@ -1109,12 +1122,51 @@ func handleRefreshAuth(request []byte) ([]byte, error) {
 			sa.AvatarURL = avatar
 		}
 	}
+}
 
-	next := nextRefreshTime(sa.ExpiresAt)
-	return okEnvelope(pluginapi.AuthRefreshResponse{
-		Auth:             toAuthData(sa, req.Metadata),
-		NextRefreshAfter: next,
-	}), nil
+// saveAuthRecordFn is the seam the in-process refresh persists through; tests
+// replace it because the real one needs the host bridge.
+var saveAuthRecordFn = saveAuthRecord
+
+// refreshLocks serialises refreshes per account: the token pair rotates on every
+// exchange, so two concurrent refreshes would leave one of them holding a token
+// the provider has already invalidated.
+var refreshLocks sync.Map // uid -> *sync.Mutex
+
+func refreshLockFor(uid string) *sync.Mutex {
+	value, _ := refreshLocks.LoadOrStore(uid, &sync.Mutex{})
+	return value.(*sync.Mutex)
+}
+
+// refreshStoredAuth rotates one account's tokens and writes the result back to
+// the auth file, preserving user-owned fields.
+//
+// The host only refreshes on its own schedule (driven by request failures), so
+// an account the panel alone touches can sit expired for days: every dashboard
+// load and every chat call answers 401 while nothing ever rotates the token.
+func refreshStoredAuth(sa *storedAuth) error {
+	if sa == nil || strings.TrimSpace(sa.RefreshToken) == "" {
+		return errors.New("auth record has no refresh token")
+	}
+	mu := refreshLockFor(sa.UID)
+	mu.Lock()
+	defer mu.Unlock()
+	res, err := refreshTokenFn(sa)
+	if err != nil {
+		return err
+	}
+	applyExchangeResult(sa, res)
+	carrier := existingAuthCarrier(sa)
+	// The subtitle carries the token expiry, so a note this plugin wrote would
+	// keep advertising the old one after a rotation. Only our own format is
+	// rewritten; an operator's note is left alone.
+	if note, ok := carrier["note"].(string); ok && strings.HasPrefix(note, displayName+" · ") {
+		carrier["note"] = displayNote(sa)
+	}
+	if _, err := saveAuthRecordFn(sa, carrier); err != nil {
+		return err
+	}
+	return nil
 }
 
 // nextRefreshTime refreshes 30 minutes before expiry, never sooner than 5

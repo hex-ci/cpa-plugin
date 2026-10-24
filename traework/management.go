@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -50,7 +51,8 @@ func managementRegistration() managementRegistrationResponse {
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Read quota and daily-bonus state for one (auth_index) or all accounts."},
 			{Method: http.MethodGet, Path: base + "/desensitize", Description: "Get the effective blocked-term settings."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Claim the daily bonus for one (auth_index) or all accounts."},
-			{Method: http.MethodPost, Path: base + "/checkin/config", Description: "Toggle the automatic daily claim (enabled: true/false)."},
+			{Method: http.MethodGet, Path: base + "/keepalive", Description: "Report the daily token-rotation pass: enabled, schedule, last result."},
+			{Method: http.MethodPost, Path: base + "/keepalive", Description: "Run the token-rotation pass now and return what it did."},
 			{Method: http.MethodPost, Path: base + "/login/start", Description: "Start a login attempt the panel drives."},
 			{Method: http.MethodGet, Path: base + "/login/status", Description: "Report one login attempt."},
 			{Method: http.MethodGet, Path: base + "/login/current", Description: "Report the attempt still waiting for a code."},
@@ -103,13 +105,27 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/credits"):
 		payload, err := creditsPayload(req.Query.Get("auth_index"), req.Query.Get("fresh") != "")
 		if err != nil {
+			var readErr *creditsReadError
+			if errors.As(err, &readErr) {
+				return okEnvelope(mgmtJSONResponse(http.StatusBadRequest,
+					map[string]any{"error": readErr.message, "error_code": readErr.code})), nil
+			}
 			return okEnvelope(mgmtJSONResponse(http.StatusBadRequest, map[string]any{"error": err.Error()})), nil
 		}
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, payload)), nil
 	case req.Method == http.MethodPost && strings.HasSuffix(path, "/checkin"):
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinClaim(req.ManagementRequest))), nil
-	case req.Method == http.MethodPost && strings.HasSuffix(path, "/checkin/config"):
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCheckinConfig(req.ManagementRequest))), nil
+	case req.Method == http.MethodGet && strings.HasSuffix(path, "/keepalive"):
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, keepaliveStatus())), nil
+	case req.Method == http.MethodPost && strings.HasSuffix(path, "/keepalive"):
+		run := runKeepalive()
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, map[string]any{
+			"at":        run.At.Format(time.RFC3339),
+			"refreshed": run.Refreshed,
+			"skipped":   run.Skipped,
+			"failed":    run.Failed,
+			"detail":    run.Detail,
+		})), nil
 	case req.Method == http.MethodGet && strings.HasSuffix(path, "/login/current"):
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, panelLoginCurrent())), nil
 	case req.Method == http.MethodPost && strings.HasSuffix(path, "/login/start"):
@@ -194,7 +210,8 @@ func creditsPayload(authIndex string, fresh bool) (map[string]any, error) {
 		}
 		credits, checkin, err := cachedCredentials(sa, authIndex, fresh)
 		if err != nil {
-			return nil, err
+			failure := classifyCreditsFailure(err)
+			return nil, &creditsReadError{code: failure.Code, message: failure.Message}
 		}
 		return map[string]any{
 			"auth_index": authIndex,
@@ -215,13 +232,23 @@ func creditsPayload(authIndex string, fresh bool) (map[string]any, error) {
 		}
 		credits, checkin, err := cachedCredentials(sa, f.AuthIndex, fresh)
 		if err != nil {
-			out[f.AuthIndex] = map[string]any{"error": err.Error()}
+			failure := classifyCreditsFailure(err)
+			out[f.AuthIndex] = map[string]any{"error": failure.Message, "error_code": failure.Code}
 			continue
 		}
 		out[f.AuthIndex] = map[string]any{"credits": credits, "checkin": checkin}
 	}
 	return map[string]any{"accounts": out}, nil
 }
+
+// creditsReadError carries a classified read failure to the HTTP layer, so the
+// response body keeps the short message and the machine-readable code.
+type creditsReadError struct {
+	code    string
+	message string
+}
+
+func (e *creditsReadError) Error() string { return e.message }
 
 func accountsPayload() (map[string]any, error) {
 	files, err := hostAuthList()

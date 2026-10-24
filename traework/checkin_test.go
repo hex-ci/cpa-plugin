@@ -173,22 +173,23 @@ func TestHandleCheckinClaimReportsBusySeparately(t *testing.T) {
 	}
 }
 
-func TestHandleCheckinConfigTogglesAtRuntime(t *testing.T) {
+// The automatic pass has exactly one writer path: the persisted checkin_auto
+// config key, applied by configure(). The old POST /checkin/config flipped a
+// runtime-only flag that any reconfigure silently reverted, so it is gone —
+// this pins that the route stays unregistered.
+func TestCheckinAutoComesOnlyFromThePersistedConfig(t *testing.T) {
 	previous := checkinAutoEnabled()
 	t.Cleanup(func() { setCheckinAuto(previous) })
 
-	if out := handleCheckinConfig(pluginapi.ManagementRequest{Body: []byte(`{"enabled":false}`)}); out["checkin_auto"] != false {
-		t.Fatalf("out = %+v, want the toggle off", out)
+	paths := make(map[string]bool)
+	for _, route := range managementRegistration().Routes {
+		paths[route.Path] = true
 	}
-	if checkinAutoEnabled() {
-		t.Error("the handler must change the running value")
+	if paths["/plugins/"+providerName+"/checkin/config"] {
+		t.Fatal("the runtime-only check-in toggle must not be registered")
 	}
-	// A body without the field reports the current value instead of flipping it.
-	if out := handleCheckinConfig(pluginapi.ManagementRequest{Body: []byte(`{}`)}); out["checkin_auto"] != false {
-		t.Errorf("out = %+v, want the value unchanged", out)
-	}
-	if out := handleCheckinConfig(pluginapi.ManagementRequest{Body: []byte(`{"enabled":true}`)}); out["checkin_auto"] != true || out["persistent"] != false {
-		t.Errorf("out = %+v, want the toggle on and flagged as runtime-only", out)
+	if !paths["/plugins/"+providerName+"/checkin"] {
+		t.Fatal("the manual claim route must stay")
 	}
 }
 

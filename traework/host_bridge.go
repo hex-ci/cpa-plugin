@@ -190,6 +190,44 @@ func hostHTTPDoWithStateAndCallback(state *proxyRoutingState, req *http.Request,
 	return decodeBufferedHostHTTPResponse(result)
 }
 
+// hostHTTPDoFallback tries the host bridge and, when it cannot answer, repeats
+// the request directly. The keepalive ticker runs outside a host request, where
+// the bridge has no callback to attach to, so the exchange it performs has to
+// survive that: it is a single POST, and a retry is only attempted when no
+// answer arrived.
+func hostHTTPDoFallback(req *http.Request) (*hostHTTPResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("nil request")
+	}
+	var bodyBytes []byte
+	if req.Body != nil {
+		b, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+		_ = req.Body.Close()
+		bodyBytes = b
+	}
+	first, err := hostHTTPDoWithStateAndCallback(currentProxyState(), cloneBufferedRequest(req, bodyBytes), "")
+	if err == nil {
+		return first, nil
+	}
+	hostLogInfo("traework: host bridge unavailable, repeating the request directly",
+		map[string]any{"detail": redactSecrets(err.Error())})
+	return hostHTTPDoDirect(req, bodyBytes)
+}
+
+// cloneBufferedRequest rebuilds a request around an already-read body so the same
+// call can be attempted twice.
+func cloneBufferedRequest(req *http.Request, bodyBytes []byte) *http.Request {
+	clone, err := http.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), bytes.NewReader(bodyBytes))
+	if err != nil {
+		return req
+	}
+	clone.Header = req.Header.Clone()
+	return clone
+}
+
 // hostHTTPDoDirect executes the request via the plugin's own http.Client.
 // Used as a fallback when the host bridge is unavailable (unit tests).
 func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, error) {

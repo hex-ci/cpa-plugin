@@ -39,7 +39,7 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 		switch key.Value {
 		case "management_key", "management-key", "proxy-url", "proxy_url",
 			"login_callback_url", "login-callback-url":
-		case "desensitize", "checkin_auto", "checkin-auto":
+		case "desensitize", "checkin_auto", "checkin-auto", "token_keepalive", "token-keepalive":
 			// Boolean keys branch out of the string-only check below. YAML tags
 			// True/TRUE as !!bool too, so the value is normalised here: the
 			// consumers compare against the literal "true".
@@ -49,6 +49,8 @@ func parseTopLevelConfigScalars(raw []byte) (map[string]string, error) {
 			values[key.Value] = strconv.FormatBool(strings.EqualFold(value.Value, "true"))
 			continue
 		default:
+			// Host-owned keys (store, install) and keys this build does not know:
+			// ignore instead of failing, so a newer config stays loadable.
 			continue
 		}
 		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" {

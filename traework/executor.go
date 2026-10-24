@@ -238,11 +238,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	if err != nil {
 		return errorEnvelope("invalid_request", err.Error()), nil
 	}
-	httpReq, err := soloChatRequest(sa, body)
-	if err != nil {
-		return errorEnvelope("internal_error", err.Error()), nil
-	}
-	resp, err := hostHTTPDoWithCallback(httpReq, req.HostCallbackID)
+	resp, err := doSoloChat(sa, body, req.HostCallbackID)
 	if err != nil {
 		return errorEnvelope("http_error", redactSecrets(err.Error())), nil
 	}
@@ -296,8 +292,25 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks}), nil
 	}
 
-	// Async: return at once and pump frames to the host stream.
-	go pumpTraeStream(httpReq, req.StreamID, req.Model, sseFramed, req.HostCallbackID)
+	// Async: open the upstream here rather than inside the pump. An error frame
+	// inside a 200 stream reaches the client as 500 whatever the upstream said,
+	// which hides a 401/429 behind a "server error"; returning the status keeps
+	// the real code (and lets the host retry on another credential).
+	attempt := openStreamAttempt(sa, body, req.HostCallbackID)
+	if attempt.err != nil {
+		return errorEnvelope("http_error", redactSecrets(attempt.err.Error())), nil
+	}
+	if attempt.status >= 400 {
+		payload := attempt.body
+		if attempt.stream != nil {
+			raw, _ := io.ReadAll(newHostStreamReader(attempt.stream))
+			payload = string(raw)
+			attempt.stream.Close()
+		}
+		return errorEnvelopeWithStatus("http_error",
+			fmt.Sprintf("upstream %d: %s", attempt.status, truncateRedacted(payload, 300)), attempt.status), nil
+	}
+	go pumpOpenedTraeStream(attempt.stream, req.StreamID, req.Model, sseFramed)
 	return okEnvelope(streamResponse{Headers: headers}), nil
 }
 
@@ -379,30 +392,77 @@ func collectTraeChunks(httpReq *http.Request, model string, sseFramed bool, call
 	return chunks, nil
 }
 
-// pumpTraeStream streams the upstream to the host chunk by chunk. It always
-// closes the host stream exactly once.
-func pumpTraeStream(httpReq *http.Request, streamID, model string, sseFramed bool, callbackID string) {
-	closed := false
-	closeOnce := func() {
-		if closed {
-			return
-		}
-		closed = true
-		streamClose(streamID)
-	}
-	defer closeOnce()
-
-	stream, statusCode, _, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
+// doSoloChat performs one upstream chat call, rotating the token once when the
+// provider rejects it. The host only refreshes around its own request handling,
+// so a call that lands on an expired credential would otherwise fail even though
+// the record carries a usable refresh token.
+func doSoloChat(sa *storedAuth, body []byte, callbackID string) (*hostHTTPResponse, error) {
+	httpReq, err := soloChatRequest(sa, body)
 	if err != nil {
-		streamEmitError(streamID, "http_error: "+err.Error())
-		return
+		return nil, err
 	}
+	resp, err := hostHTTPDoWithCallback(httpReq, callbackID)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	if refreshErr := refreshStoredAuth(sa); refreshErr != nil {
+		hostLogInfo("traework: refresh after 401 failed", map[string]any{"detail": redactSecrets(refreshErr.Error())})
+		return resp, nil
+	}
+	retryReq, err := soloChatRequest(sa, body)
+	if err != nil {
+		return resp, nil
+	}
+	return hostHTTPDoWithCallback(retryReq, callbackID)
+}
+
+// streamAttempt is one opened (or rejected) streaming attempt. Body carries the
+// upstream payload when the attempt failed before a stream was handed back —
+// otherwise the caller would report an empty reason because the body was already
+// drained while rotating the token.
+type streamAttempt struct {
+	stream  *hostHTTPStream
+	status  int
+	headers http.Header
+	body    string
+	err     error
+}
+
+// openStreamAttempt is doSoloChat for the streaming entry point: it returns as
+// soon as the response headers arrive, so a rejected attempt keeps its real HTTP
+// status instead of becoming an error frame inside a 200 stream.
+func openStreamAttempt(sa *storedAuth, body []byte, callbackID string) streamAttempt {
+	httpReq, err := soloChatRequest(sa, body)
+	if err != nil {
+		return streamAttempt{err: err}
+	}
+	stream, status, headers, err := hostHTTPDoStreamWithCallback(httpReq, callbackID)
+	if err != nil || status != http.StatusUnauthorized {
+		return streamAttempt{stream: stream, status: status, headers: headers, err: err}
+	}
+	var payload string
+	if stream != nil {
+		raw, _ := io.ReadAll(newHostStreamReader(stream))
+		payload = string(raw)
+		stream.Close()
+	}
+	if refreshErr := refreshStoredAuth(sa); refreshErr != nil {
+		hostLogInfo("traework: refresh after 401 failed", map[string]any{"detail": redactSecrets(refreshErr.Error())})
+		return streamAttempt{status: http.StatusUnauthorized, body: payload}
+	}
+	retryReq, err := soloChatRequest(sa, body)
+	if err != nil {
+		return streamAttempt{status: http.StatusUnauthorized, body: payload}
+	}
+	retryStream, retryStatus, retryHeaders, retryErr := hostHTTPDoStreamWithCallback(retryReq, callbackID)
+	return streamAttempt{stream: retryStream, status: retryStatus, headers: retryHeaders, err: retryErr}
+}
+
+// pumpOpenedTraeStream copies one already-open 2xx upstream stream to the host,
+// then closes both ends exactly once.
+func pumpOpenedTraeStream(stream *hostHTTPStream, streamID, model string, sseFramed bool) {
 	defer stream.Close()
-	if statusCode >= 400 {
-		payload, _ := io.ReadAll(newHostStreamReader(stream))
-		streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 300)))
-		return
-	}
+	defer streamClose(streamID)
 
 	translator := newTraeTranslator(model)
 	emitted := 0
@@ -430,11 +490,7 @@ func pumpTraeStream(httpReq *http.Request, streamID, model string, sseFramed boo
 		return nil
 	})
 	if errScan != nil {
-		if emitted > 0 {
-			// The client already has content: report the failure and stop.
-			streamEmitError(streamID, redactSecrets(errScan.Error()))
-			return
-		}
+		// The client already has content: report the failure and stop.
 		streamEmitError(streamID, redactSecrets(errScan.Error()))
 		return
 	}
@@ -443,6 +499,7 @@ func pumpTraeStream(httpReq *http.Request, streamID, model string, sseFramed boo
 			return
 		}
 	}
+	_ = emitted
 }
 
 // streamHeaders are the response headers for a streaming executor call.

@@ -21,7 +21,6 @@ func TestManagementRegistrationExposesPanelAndAccounts(t *testing.T) {
 		"/plugins/" + providerName + "/login/cancel":   http.MethodPost,
 		"/plugins/" + providerName + "/credits":        http.MethodGet,
 		"/plugins/" + providerName + "/checkin":        http.MethodPost,
-		"/plugins/" + providerName + "/checkin/config": http.MethodPost,
 	}
 	for _, route := range reg.Routes {
 		if method, ok := wantRoutes[route.Path]; ok {

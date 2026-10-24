@@ -1,11 +1,13 @@
 // checkin.go — the daily bonus. POST /checkin claims it for one account or all,
-// POST /checkin/config flips the automatic pass, and a twice-a-day ticker claims
+// The automatic pass is a persisted config key (checkin_auto) applied by
+// configure(); a twice-a-day ticker claims
 // it for every account. The claim is the plugin's only upstream write, and its
 // business code (0 ok, 9074 busy) decides whether the panel offers a retry.
 package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -68,11 +70,31 @@ type checkinClaimResult struct {
 // failures in the body, not in the status line, so a 200 with code != 0 is a
 // failure here.
 func claimCheckin(sa *storedAuth) map[string]any {
-	headers := ugHeaders(sa)
+	// A rejected token gets one rotation and one retry, the same as the quota
+	// read: the claim is a write and works fine after a refresh.
+	if outcome := postClaim(sa); outcome != nil {
+		return outcome
+	}
+	if refreshErr := refreshStoredAuth(sa); refreshErr != nil {
+		hostLogInfo("traework: refresh before check-in failed", map[string]any{"detail": redactSecrets(refreshErr.Error())})
+		return map[string]any{"success": false, "message": "登录已失效，请在面板重新登录"}
+	}
+	if outcome := postClaim(sa); outcome != nil {
+		return outcome
+	}
+	return map[string]any{"success": false, "message": "登录已失效，请在面板重新登录"}
+}
+
+// postClaim posts once and returns the verdict, or nil when the attempt was
+// rejected because of the token (the caller then rotates and retries).
+func postClaim(sa *storedAuth) map[string]any {
 	var res checkinClaimResult
 	// postJSON must run before res is read: passing it as an argument to
 	// claimOutcome would copy the struct before the decode fills it in.
-	err := postJSON(apiBaseCN+checkinClaimPath, headers, ugBody(), &res)
+	err := postJSON(apiBaseCN+checkinClaimPath, ugHeaders(sa), ugBody(), &res)
+	if upstreamStatusOfError(err) == http.StatusUnauthorized {
+		return nil
+	}
 	return claimOutcome(res, err)
 }
 
@@ -80,7 +102,9 @@ func claimCheckin(sa *storedAuth) map[string]any {
 // classification is testable without reaching upstream.
 func claimOutcome(res checkinClaimResult, err error) map[string]any {
 	if err != nil {
-		return map[string]any{"success": false, "message": err.Error()}
+		// One short sentence: the raw body is an unbroken JSON blob and the panel
+		// renders this text verbatim in a toast.
+		return map[string]any{"success": false, "message": classifyCreditsFailure(err).Message}
 	}
 	if res.Code != 0 {
 		return map[string]any{
@@ -121,6 +145,13 @@ func pruneCheckinLocks(live map[string]bool) {
 	})
 }
 
+// alreadyCheckedInToday reports whether the daily bonus is already taken. It is
+// a read: no account lock is held while it runs.
+func alreadyCheckedInToday(sa *storedAuth, authIndex string) bool {
+	_, checkin, err := cachedCredentials(sa, authIndex, true)
+	return err == nil && checkin != nil && checkin.TodayCheckedIn
+}
+
 // claimCheckinForAccount claims one account's bonus and reports what happened.
 // A status read comes first: when it already says today is taken there is
 // nothing to gain from the write.
@@ -133,6 +164,13 @@ func claimCheckinForAccount(authIndex string) map[string]any {
 	}
 	out["label"] = labelForAuth(sa)
 
+	if alreadyCheckedInToday(sa, authIndex) {
+		out["success"] = true
+		out["already"] = true
+		out["message"] = "今日已签到"
+		return out
+	}
+
 	mu := checkinLockFor(authIndex)
 	mu.Lock()
 	locked := true
@@ -141,13 +179,6 @@ func claimCheckinForAccount(authIndex string) map[string]any {
 			mu.Unlock()
 		}
 	}()
-
-	if _, checkin, err := cachedCredentials(sa, authIndex, true); err == nil && checkin != nil && checkin.TodayCheckedIn {
-		out["success"] = true
-		out["already"] = true
-		out["message"] = "今日已签到"
-		return out
-	}
 
 	outcome := checkinClaimFn(sa)
 	// 9074 also happens for real (peak hours), so retry a couple of times before
@@ -158,15 +189,15 @@ func claimCheckinForAccount(authIndex string) map[string]any {
 		mu.Unlock()
 		locked = false
 		time.Sleep(claimRetryDelay * time.Duration(attempt+1))
-		mu.Lock()
-		locked = true
-		// Another driver may have claimed while this one waited.
-		if _, checkin, err := cachedCredentials(sa, authIndex, true); err == nil && checkin != nil && checkin.TodayCheckedIn {
+		// Read the state while still unlocked: the read may rotate the token.
+		if alreadyCheckedInToday(sa, authIndex) {
 			out["success"] = true
 			out["already"] = true
 			out["message"] = "今日已签到"
 			return out
 		}
+		mu.Lock()
+		locked = true
 		outcome = checkinClaimFn(sa)
 	}
 	for k, v := range outcome {
@@ -245,18 +276,6 @@ func handleCheckinClaim(req pluginapi.ManagementRequest) map[string]any {
 			"fail":    failed,
 		},
 	}
-}
-
-// handleCheckinConfig serves POST /checkin/config {enabled}.
-func handleCheckinConfig(req pluginapi.ManagementRequest) map[string]any {
-	var body struct {
-		Enabled *bool `json:"enabled"`
-	}
-	_ = json.Unmarshal(req.Body, &body)
-	if body.Enabled != nil {
-		setCheckinAuto(*body.Enabled)
-	}
-	return map[string]any{"checkin_auto": checkinAutoEnabled(), "persistent": false}
 }
 
 // runAutoCheckin claims every account's bonus. This is the scheduled tick.

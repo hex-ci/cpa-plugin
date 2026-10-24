@@ -885,3 +885,23 @@ test("a failed blocked-term save re-reads the effective settings", async () => {
   const reads = calls.filter((c) => c.method === "GET" && c.url.endsWith("/desensitize"));
   assert.ok(reads.length >= 2, "the dialog must reload the effective settings after a failed save");
 });
+
+test("a failed credit read keeps the upstream body out of the card text", () => {
+  const { context } = runPanel({ payload: { count: 0, accounts: [] } });
+  const body = 'upstream HTTP 401: {"code":1001,"message":"' + "x".repeat(180) + '"}';
+  const html = context.creditFailureHTML(body);
+
+  assert.match(html, /读取失败/);
+  const visible = html.split('title="')[0];
+  assert.ok(!visible.includes("x".repeat(60)), "the raw body must not reach the visible text");
+  assert.ok(html.includes('…'), "the preview is elided");
+  // esc() escapes quotes, so the tail of the payload is what proves the tooltip
+  // carries the whole body instead of the preview.
+  assert.ok(html.includes("x".repeat(180)), "the tooltip keeps the full detail");
+});
+
+test("an expired account is badged instead of looking healthy", () => {
+  const { context } = runPanel({ payload: { count: 0, accounts: [] } });
+  assert.match(context.accountBadges({ expired: true }), /登录已过期/);
+  assert.doesNotMatch(context.accountBadges({ expired: false }), /登录已过期/);
+});

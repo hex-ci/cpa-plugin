@@ -13,7 +13,7 @@ import (
 )
 
 // version is injected at build time via -ldflags "-X main.version=...".
-var version = "0.2.2"
+var version = "0.2.3"
 
 type registration struct {
 	SchemaVersion uint32                 `json:"schema_version"`
@@ -126,6 +126,7 @@ func twRegistration() registration {
 				{Name: "desensitize", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Insert U+200B into configured blocked terms in system/developer prompt text and tool description fields (default false)."},
 				{Name: "desensitize_terms", Type: pluginapi.ConfigFieldTypeArray, Description: "Editable literal term list for desensitize; missing uses the built-in 85 terms and [] means an empty custom list."},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Claim the daily TraeWork bonus automatically at 09:00 and 21:00 local time (the evening slot retries a busy morning). Manual claims stay available in the panel either way; default true."},
+				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Rotate access tokens daily at 22:00 local time, and shortly after startup, for accounts within a day of expiry (default true). Keeps an idle account usable without opening the panel."},
 			},
 		},
 		Capabilities: registrationCapability{
@@ -147,6 +148,7 @@ func configure(raw []byte) error {
 	nextProxyURL := ""
 	nextCallbackURL := ""
 	nextCheckinAuto := true
+	nextKeepalive := tokenKeepaliveEnabled()
 	nextDesensitize := false
 	var nextDesensitizeTerms []string
 	desensitizeTermsSet := false
@@ -186,6 +188,11 @@ func configure(raw []byte) error {
 		if checkinRaw != "" {
 			nextCheckinAuto = checkinRaw == "true"
 		}
+		if keepaliveRaw := strings.TrimSpace(scalars["token_keepalive"]); keepaliveRaw != "" {
+			nextKeepalive = keepaliveRaw == "true"
+		} else if keepaliveRaw := strings.TrimSpace(scalars["token-keepalive"]); keepaliveRaw != "" {
+			nextKeepalive = keepaliveRaw == "true"
+		}
 		if desensitizeRaw := strings.TrimSpace(scalars["desensitize"]); desensitizeRaw != "" {
 			nextDesensitize = desensitizeRaw == "true"
 		}
@@ -207,8 +214,10 @@ func configure(raw []byte) error {
 	managementKey.Store(nextMgmtKey)
 	loginCallbackOverride.Store(nextCallbackURL)
 	setCheckinAuto(nextCheckinAuto)
+	setKeepaliveEnabled(nextKeepalive)
 	desensitizeRuntime.Store(desensitizeCfg)
-	// configure() runs on every register/reconfigure; the scheduler arms once.
+	// configure() runs on every register/reconfigure; both schedulers arm once.
 	ensureCheckinScheduler()
+	ensureKeepaliveScheduler()
 	return configureProxy(nextProxyURL)
 }

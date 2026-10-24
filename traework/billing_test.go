@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -197,12 +198,79 @@ func TestPeekCredentialsDoesNotFetch(t *testing.T) {
 	}
 }
 
-func TestCachedCredentialsPropagatesFailure(t *testing.T) {
+// A read failure reaches the panel as a classified sentence, not as the raw
+// upstream body: the card renders this text, and an unbroken JSON payload used to
+// blow the layout out.
+func TestCachedCredentialsClassifiesFailure(t *testing.T) {
 	resetBillingCache()
-	want := errors.New("upstream HTTP 500")
-	stubFetchCredentials(t, nil, nil, want)
+	stubFetchCredentials(t, nil, nil, &upstreamHTTPError{Status: 500, Body: `{"code":500}`})
 
-	if _, _, err := cachedCredentials(&storedAuth{}, "idx-1", false); !errors.Is(err, want) {
-		t.Fatalf("err = %v, want the upstream failure", err)
+	_, _, err := cachedCredentials(&storedAuth{}, "idx-1", false)
+	failure, ok := err.(*creditsFailure)
+	if !ok {
+		t.Fatalf("err = %v (%T), want a classified failure", err, err)
+	}
+	if failure.Code != creditsErrBusy || failure.Message != "上游繁忙，稍后再试" {
+		t.Fatalf("failure = %+v, want the busy bucket", failure)
+	}
+	if strings.Contains(failure.Message, "{") {
+		t.Fatalf("message = %q, want no raw upstream body", failure.Message)
+	}
+}
+
+// A rejected token is the one case worth a retry: the record carries a refresh
+// token, and nothing else in the process rotates it on demand.
+func TestCredentialsWithRefreshRetriesOnceAfter401(t *testing.T) {
+	resetBillingCache()
+	refreshed := false
+	previousRefresh, previousSave := refreshTokenFn, saveAuthRecordFn
+	refreshTokenFn = func(sa *storedAuth) (*exchangeResult, error) {
+		refreshed = true
+		sa.AccessToken = "new-token"
+		return &exchangeResult{Token: "new-token"}, nil
+	}
+	saveAuthRecordFn = func(*storedAuth, map[string]any) (string, error) { return "traework-u-1.json", nil }
+	t.Cleanup(func() { refreshTokenFn, saveAuthRecordFn = previousRefresh, previousSave })
+
+	var calls int32
+	previous := fetchCredentialsFn
+	fetchCredentialsFn = func(sa *storedAuth) (*creditsView, *checkinView, error) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return nil, nil, &upstreamHTTPError{Status: 401, Body: `{"code":1001}`}
+		}
+		return &creditsView{TotalRemain: 42}, &checkinView{}, nil
+	}
+	t.Cleanup(func() { fetchCredentialsFn = previous })
+
+	credits, _, err := credentialsWithRefresh(&storedAuth{UID: "u-1", RefreshToken: "rt"})
+	if err != nil {
+		t.Fatalf("credentialsWithRefresh: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("a 401 must trigger one refresh")
+	}
+	if credits == nil || credits.TotalRemain != 42 {
+		t.Fatalf("credits = %+v, want the retried read", credits)
+	}
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Fatalf("upstream reads = %d, want exactly 2", n)
+	}
+}
+
+// When the refresh itself fails the card must say so in one short sentence.
+func TestCredentialsWithRefreshReportsExpiredLogin(t *testing.T) {
+	resetBillingCache()
+	previousRefresh := refreshTokenFn
+	refreshTokenFn = func(*storedAuth) (*exchangeResult, error) { return nil, errors.New("refresh rejected") }
+	t.Cleanup(func() { refreshTokenFn = previousRefresh })
+	stubFetchCredentials(t, nil, nil, &upstreamHTTPError{Status: 401, Body: `{"code":1001}`})
+
+	_, _, err := credentialsWithRefresh(&storedAuth{UID: "u-2", RefreshToken: "rt"})
+	failure, ok := err.(*creditsFailure)
+	if !ok || failure.Code != creditsErrAuth {
+		t.Fatalf("err = %v, want the auth bucket", err)
+	}
+	if failure.Message != "登录已失效，请在面板重新登录" {
+		t.Fatalf("message = %q", failure.Message)
 	}
 }

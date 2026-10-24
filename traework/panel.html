@@ -52,7 +52,7 @@ button.done:disabled{opacity:1}
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
 .card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
-.card{padding:16px}
+.card{padding:16px;min-width:0}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:10px}
 .card-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card-badges{display:flex;gap:6px;align-items:center;flex:0 0 auto;white-space:nowrap}
@@ -69,7 +69,7 @@ button.done:disabled{opacity:1}
 .pb-label>span:first-child{color:var(--fg);font-size:13px;font-weight:600}
 .pb-track{height:8px;border-radius:99px;background:var(--mut-soft);overflow:hidden}
 .pb-bar{height:100%;border-radius:99px;background:var(--ok);transition:width .25s ease}
-.pb-meta{color:var(--mut);font-size:11px;line-height:1.5}
+.pb-meta{color:var(--mut);font-size:11px;line-height:1.5;overflow-wrap:anywhere;word-break:break-word}
 .cgroups{display:flex;flex-direction:column;gap:8px;margin-top:8px}
 .cgroup{display:flex;flex-direction:column;gap:4px}
 .cg-head{display:flex;align-items:center;gap:8px;font-size:12px}
@@ -90,7 +90,7 @@ button.done:disabled{opacity:1}
 .summary-item .v.warn{color:var(--warn)}
 .summary-item .v.err{color:var(--err)}
 .row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px dashed var(--border)}
-.row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600;text-align:right}
+.row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600;text-align:right;min-width:0;overflow-wrap:anywhere}
 .v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
 .pkgs{margin-top:10px;font-size:12px;color:var(--mut);border-top:1px solid var(--border);padding-top:8px;word-break:break-all}
 .pkgs.warn{color:var(--warn)}
@@ -389,7 +389,7 @@ function accountBadges(a){
   // 「耗尽」只在确实报了额度池时才说：池未知时 remain 为 0 不代表没额度。
   const exhausted=!a.disabled&&!!a.credits&&(cr.total_remain||0)<=0&&(cr.total_size||0)>0;
   const plan=planLabel(cr.identity);
-  return (a.disabled?'<span class="badge plain">已停用</span>':"")+
+  return (a.disabled?'<span class="badge plain">已停用</span>':(a.expired?'<span class="badge warn">登录已过期</span>':""))+
     (exhausted?'<span class="badge exhausted">额度耗尽</span>':"")+
     (cr.billing?'<span class="badge accent">'+esc(cr.billing)+'</span>':"")+
     (plan?'<span class="badge">'+esc(plan)+'</span>':"");
@@ -420,6 +420,17 @@ function progressHTML(cr,state){
     '<div class="pb-meta">剩余 '+num(remain)+' · 已用 '+num(used)+' · 额度池 '+num(total)+
       (cr.pack_count?(" · "+cr.pack_count+" 个包"):"")+when+'</div>'+
     packsHTML(cr.packs)+'</div>';
+}
+// A failed read keeps the card readable: the visible line is one short sentence
+// and the upstream body (often a long unbroken JSON blob) only fills the tooltip.
+// Rendering the body inline is what widened the card until the layout broke.
+const FAILURE_PREVIEW_CHARS=48;
+function creditFailureHTML(detail){
+  const raw=String(detail||"");
+  const summary=raw.length>FAILURE_PREVIEW_CHARS?raw.slice(0,FAILURE_PREVIEW_CHARS)+"…":raw;
+  return '<div class="pb"><div class="pb-label"><span>可用积分</span><span class="err">读取失败</span></div>'+
+    '<div class="pb-track"><div class="pb-bar" style="width:0%"></div></div>'+
+    '<div class="pb-meta" title="'+esc(raw)+'">'+esc(summary)+'</div></div>';
 }
 function packsHTML(packs){
   if(!packs||!packs.length)return "";
@@ -681,9 +692,7 @@ async function refreshCredits(authIndex,card,btn,fresh){
     applyCredits(authIndex,payload);
   }catch(err){
     const failed=card&&card.querySelector(".pb");
-    if(failed)failed.outerHTML='<div class="pb"><div class="pb-label"><span>可用积分</span><span>读取失败</span></div>'+
-      '<div class="pb-track"><div class="pb-bar" style="width:0%"></div></div>'+
-      '<div class="pb-meta">'+esc(String((err&&err.message)||err))+'</div></div>';
+    if(failed)failed.outerHTML=creditFailureHTML((err&&err.message)||err);
   }finally{
     if(btn)btn.disabled=false;
   }

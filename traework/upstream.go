@@ -68,7 +68,34 @@ func ideHeaders(token, uid, machineID, deviceID string) map[string]string {
 	}
 }
 
+// upstreamHTTPError is a non-2xx answer from the provider. Body is truncated and
+// redacted already; it is for logs and tooltips, never for the panel's main text.
+type upstreamHTTPError struct {
+	Status int
+	Body   string
+}
+
+func (e *upstreamHTTPError) Error() string {
+	return fmt.Sprintf("upstream HTTP %d: %s", e.Status, e.Body)
+}
+
+// upstreamStatusOfError reports the HTTP status a failure carries, or 0 when it
+// failed before an answer arrived.
+func upstreamStatusOfError(err error) int {
+	var httpErr *upstreamHTTPError
+	if errors.As(err, &httpErr) {
+		return httpErr.Status
+	}
+	return 0
+}
+
 func postJSON(url string, headers map[string]string, body any, out any) error {
+	return postJSONWith(hostHTTPDo, url, headers, body, out)
+}
+
+// postJSONWith is postJSON against a caller-chosen transport, so the keepalive
+// exchange can fall back to a direct call when no host request is in flight.
+func postJSONWith(do func(*http.Request) (*hostHTTPResponse, error), url string, headers map[string]string, body any, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -84,12 +111,14 @@ func postJSON(url string, headers map[string]string, body any, out any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := hostHTTPDo(req)
+	resp, err := do(req)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("upstream HTTP %d: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 300))
+		// Typed so callers can act on the status (401 → refresh, 429 → back off)
+		// instead of re-parsing a formatted string.
+		return &upstreamHTTPError{Status: resp.StatusCode, Body: truncateRedacted(string(resp.Body), 300)}
 	}
 	if out == nil {
 		return nil
@@ -102,8 +131,12 @@ func postJSON(url string, headers map[string]string, body any, out any) error {
 
 // postJSONResult posts and unwraps the trae Result field into out.
 func postJSONResult(url string, headers map[string]string, body any, out any) error {
+	return postJSONResultWith(hostHTTPDo, url, headers, body, out)
+}
+
+func postJSONResultWith(do func(*http.Request) (*hostHTTPResponse, error), url string, headers map[string]string, body any, out any) error {
 	var env traeEnvelope
-	if err := postJSON(url, headers, body, &env); err != nil {
+	if err := postJSONWith(do, url, headers, body, &env); err != nil {
 		return err
 	}
 	if len(env.Result) == 0 || string(env.Result) == "null" {
@@ -310,7 +343,7 @@ func refreshAccessToken(sa *storedAuth) (*exchangeResult, error) {
 	var res exchangeResult
 	// The client sends exactly these two headers on a refresh.
 	headers := map[string]string{"x-cloudide-token": sa.AccessToken}
-	if err := postJSONResult(apiBaseCN+oauthExchangePath, headers, body, &res); err != nil {
+	if err := postJSONResultWith(hostHTTPDoFallback, apiBaseCN+oauthExchangePath, headers, body, &res); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(res.Token) == "" {

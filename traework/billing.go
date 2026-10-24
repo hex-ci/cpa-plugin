@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"hash/fnv"
 	"strconv"
 	"strings"
@@ -318,6 +319,69 @@ var fetchCredentialsFn = fetchCredentials
 
 // cachedCredentials returns an account's snapshot, fetching it when the cached
 // one is missing or older than billingTTL. fresh skips the cache.
+// Codes the panel can branch on without parsing prose.
+const (
+	creditsErrAuth    = "auth_expired"
+	creditsErrBusy    = "upstream_busy"
+	creditsErrNetwork = "network"
+	creditsErrOther   = "upstream_error"
+)
+
+// creditsFailure is a classified read failure. Message is what a card shows;
+// Detail keeps the upstream bytes for the log. Dumping Detail into the card is
+// what used to push a long unbroken JSON body through the card's layout.
+type creditsFailure struct {
+	Code    string
+	Message string
+	Detail  string
+}
+
+func (e *creditsFailure) Error() string { return e.Message }
+
+// classifyCreditsFailure turns a provider failure into one short sentence.
+func classifyCreditsFailure(err error) *creditsFailure {
+	if err == nil {
+		return nil
+	}
+	if existing, ok := err.(*creditsFailure); ok {
+		return existing
+	}
+	status := upstreamStatusOfError(err)
+	switch {
+	case status == 401 || status == 403:
+		return &creditsFailure{Code: creditsErrAuth, Message: "登录已失效，请在面板重新登录", Detail: err.Error()}
+	case status == 429 || status >= 500:
+		return &creditsFailure{Code: creditsErrBusy, Message: "上游繁忙，稍后再试", Detail: err.Error()}
+	case status > 0:
+		return &creditsFailure{Code: creditsErrOther, Message: fmt.Sprintf("上游返回 %d", status), Detail: err.Error()}
+	default:
+		return &creditsFailure{Code: creditsErrNetwork, Message: "网络不可达", Detail: err.Error()}
+	}
+}
+
+// credentialsWithRefresh reads the quota, and on a rejected token rotates once
+// and retries. Nothing else in the process refreshes a plugin credential on
+// demand: the host only does so around request handling, so a panel-only account
+// would otherwise answer 401 forever.
+func credentialsWithRefresh(sa *storedAuth) (*creditsView, *checkinView, error) {
+	credits, checkin, err := fetchCredentialsFn(sa)
+	if err == nil {
+		return credits, checkin, nil
+	}
+	if upstreamStatusOfError(err) != 401 {
+		return nil, nil, classifyCreditsFailure(err)
+	}
+	if refreshErr := refreshStoredAuth(sa); refreshErr != nil {
+		hostLogInfo("traework: refresh after 401 failed", map[string]any{"detail": redactSecrets(refreshErr.Error())})
+		return nil, nil, classifyCreditsFailure(err)
+	}
+	credits, checkin, retryErr := fetchCredentialsFn(sa)
+	if retryErr != nil {
+		return nil, nil, classifyCreditsFailure(retryErr)
+	}
+	return credits, checkin, nil
+}
+
 func cachedCredentials(sa *storedAuth, authIndex string, fresh bool) (*creditsView, *checkinView, error) {
 	billingMu.Lock()
 	if entry, ok := billingCache[authIndex]; ok && !fresh && time.Since(entry.at) < billingTTL {
@@ -326,7 +390,7 @@ func cachedCredentials(sa *storedAuth, authIndex string, fresh bool) (*creditsVi
 	}
 	billingMu.Unlock()
 
-	credits, checkin, err := fetchCredentialsFn(sa)
+	credits, checkin, err := credentialsWithRefresh(sa)
 
 	billingMu.Lock()
 	billingCache[authIndex] = billingEntry{credits: credits, checkin: checkin, at: time.Now(), err: err}
