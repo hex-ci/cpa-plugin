@@ -143,9 +143,6 @@ func TestCosyVersionFollowsConfig(t *testing.T) {
 		t.Fatalf("payload decode: %v", err)
 	}
 	decoded := string(raw)
-	if err != nil {
-		t.Fatalf("payload decode: %v", err)
-	}
 	if !strings.Contains(decoded, `"cosyVersion":"9.9.9"`) {
 		t.Fatalf("payload = %s, want the configured cosyVersion", decoded)
 	}
