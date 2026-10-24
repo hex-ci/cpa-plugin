@@ -76,7 +76,7 @@ func TestMergeCampaignStateOverridesLegacyDisabled(t *testing.T) {
 				Amount float64 `json:"amount"`
 			}{Kind: "CREDITS", Amount: 100}},
 	}}
-	mergeCampaignState(sum, list)
+	mergeCampaignState(sum, list, nil)
 	if !sum.Active {
 		t.Fatal("campaign must make the summary active")
 	}
@@ -91,7 +91,7 @@ func TestMergeCampaignStateOverridesLegacyDisabled(t *testing.T) {
 				Amount float64 `json:"amount"`
 			}{Kind: "CREDITS", Amount: 100}},
 	}}
-	mergeCampaignState(sum, claimedList)
+	mergeCampaignState(sum, claimedList, nil)
 	if !sum.TodayCheckedIn || sum.TodayCredit != 100 {
 		t.Fatalf("claimed state not reflected: %+v", sum)
 	}
@@ -101,8 +101,77 @@ func TestMergeCampaignStateOverridesLegacyDisabled(t *testing.T) {
 // rather than claiming an activity exists.
 func TestMergeCampaignStateIgnoresEmptyList(t *testing.T) {
 	sum := &checkinSummary{Active: false}
-	mergeCampaignState(sum, &campaignList{ShowCampaign: false})
+	mergeCampaignState(sum, &campaignList{ShowCampaign: false}, nil)
 	if sum.Active {
 		t.Fatal("empty campaign list must not activate the summary")
+	}
+}
+
+// A granted claim must win over a list that still reports CLAIMABLE: upstream
+// keeps serving the pre-claim state for the rest of the day, and without the
+// local marker the panel re-offers "签到" for credits already collected.
+func TestClaimedTodayWinsOverStaleCampaignList(t *testing.T) {
+	sa := testAuth(realmCN, "uid-claimed")
+	markClaimedToday(sa)
+	t.Cleanup(func() {
+		claimedTodayMu.Lock()
+		delete(claimedTodayByUser, "uid-claimed")
+		claimedTodayMu.Unlock()
+	})
+	if !claimedToday(sa) {
+		t.Fatal("marker not recorded")
+	}
+
+	sum := &checkinSummary{}
+	list := &campaignList{Claimable: true, Campaigns: []campaign{{
+		CampaignID:  "c1",
+		CampaignKey: "daily-100",
+		ClaimStatus: "CLAIMABLE",
+		ActionType:  "CLAIM_BENEFIT",
+		Benefit: struct {
+			Kind   string  `json:"kind"`
+			Amount float64 `json:"amount"`
+		}{Kind: "CREDITS", Amount: 100},
+	}}}
+	mergeCampaignState(sum, list, sa)
+	if !sum.TodayCheckedIn {
+		t.Fatal("claimed marker must override the stale CLAIMABLE list")
+	}
+	if sum.TodayCredit != 100 {
+		t.Fatalf("today credit = %d, want 100", sum.TodayCredit)
+	}
+
+	// Another account is unaffected.
+	other := testAuth(realmCN, "uid-other")
+	if claimedToday(other) {
+		t.Fatal("marker leaked across accounts")
+	}
+}
+
+// Upstream withdraws the activity once today's reward is gone, so an empty
+// campaign list plus a local grant is the normal "already claimed" shape.
+func TestClaimedMarkerWithEmptyCampaignList(t *testing.T) {
+	sa := testAuth(realmCN, "uid-empty-list")
+	markClaimedToday(sa)
+	t.Cleanup(func() {
+		claimedTodayMu.Lock()
+		delete(claimedTodayByUser, "uid-empty-list")
+		claimedTodayMu.Unlock()
+	})
+
+	sum := &checkinSummary{DailyCredit: 100}
+	mergeCampaignState(sum, &campaignList{}, sa)
+	if !sum.TodayCheckedIn {
+		t.Fatal("empty list must not hide a granted claim")
+	}
+	if sum.TodayCredit != 100 {
+		t.Fatalf("today credit = %d, want 100", sum.TodayCredit)
+	}
+
+	// Without the marker the empty list means "nothing to claim".
+	other := &checkinSummary{DailyCredit: 100}
+	mergeCampaignState(other, &campaignList{}, testAuth(realmCN, "uid-no-marker"))
+	if other.TodayCheckedIn {
+		t.Fatal("no marker, no claim: must stay unchecked")
 	}
 }

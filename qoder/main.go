@@ -346,7 +346,6 @@ func wbRegistration() registration {
 				{Name: "realm_default", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{realmCN, realmGlobal}, Description: "Region for new imports: cn (qoder.com.cn) or global (qoder.com). Stored per credential; existing accounts keep their own realm."},
 				{Name: "scheduler_mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{schedulerModeOff, schedulerModeCredits}, Description: "Multi-account selection: off (defer to built-in, default) or credits (prefer the account with the most remaining credits)."},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Daily check-in at 10:00 China time (default true). Skipped where the region has no check-in endpoint."},
-				{Name: "pro_claim_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Claim the one-off Pro upgrade pack when the account is eligible (default true)."},
 				{Name: "token_keepalive", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Refresh access tokens daily at 22:00 local time (default true)."},
 				{Name: "lifecycle_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Disable an account when its credits are exhausted and re-enable it after they are restored (default true). Accounts are never deleted."},
 				{Name: "queue_wait", Type: pluginapi.ConfigFieldTypeBoolean, Description: "When upstream answers 10605 (model capacity queue), wait for retryAfterSeconds instead of failing the request (default true)."},

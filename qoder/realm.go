@@ -109,10 +109,6 @@ func (r realmSpec) checkinStatusURL() string {
 func (r realmSpec) checkinClaimURL() string {
 	return r.Openapi + "/sash/api/v1/me/daily-check-in/claim"
 }
-func (r realmSpec) proEligibleURL() string {
-	return r.Openapi + "/sash/api/v1/me/pro-upgrade/eligibility"
-}
-func (r realmSpec) proClaimURL() string    { return r.Openapi + "/sash/api/v1/me/pro-upgrade/claim" }
 func (r realmSpec) queueStatusURL() string { return r.Openapi + "/api/v2/service/ask/queue/status" }
 
 // chatURL is the SSE inference endpoint.

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +18,12 @@ import (
 var (
 	schedulerStop chan struct{}
 	schedulerMu   sync.Mutex
+
+	// lastAutoCheckinDay is the calendar day (local) of the last completed
+	// scheduled run. A restart after the reset hour would otherwise skip the
+	// whole day: the timer only ever points at the next slot.
+	lastAutoCheckinDay string
+	lastCheckinMu      sync.Mutex
 )
 
 func ensureScheduler() {
@@ -29,6 +34,44 @@ func ensureScheduler() {
 	}
 	schedulerStop = make(chan struct{})
 	go schedulerLoop(schedulerStop)
+	go catchUpCheckin()
+}
+
+// catchUpCheckin runs today's check-in when the process started after the
+// reset hour (restart, deploy, crash recovery). Upstream claiming is
+// idempotent, so an extra run costs one request and reports "already".
+func catchUpCheckin() {
+	// Let configure finish publishing config and the host finish loading auths.
+	time.Sleep(10 * time.Second)
+	if !checkinAutoEnabled() {
+		return
+	}
+	now := time.Now()
+	if !afterFirstCheckinHour(now) {
+		return
+	}
+	lastCheckinMu.Lock()
+	done := lastAutoCheckinDay == now.Format("2006-01-02")
+	lastCheckinMu.Unlock()
+	if done {
+		return
+	}
+	hostLogf("info", "checkin catch-up: today's window was missed, running now")
+	runAutoCheckin()
+}
+
+// afterFirstCheckinHour reports whether the earliest daily slot has passed.
+func afterFirstCheckinHour(now time.Time) bool {
+	if len(checkinHours) == 0 {
+		return false
+	}
+	first := checkinHours[0]
+	for _, h := range checkinHours[1:] {
+		if h < first {
+			first = h
+		}
+	}
+	return now.Hour() >= first
 }
 
 // Note: there is deliberately no stopCheckinScheduler. The plugin shutdown
@@ -56,14 +99,20 @@ func nextCheckinTime(now time.Time) time.Time {
 }
 
 func schedulerLoop(stop chan struct{}) {
+	first := true
 	for {
 		next := nextCheckinTime(time.Now())
+		if first {
+			hostLogf("info", "checkin scheduler armed, next tick "+next.Format("2006-01-02 15:04"))
+			first = false
+		}
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-stop:
 			timer.Stop()
 			return
 		case <-timer.C:
+			hostLogf("info", "checkin tick at "+time.Now().Format("15:04"))
 			runAutoCheckin()
 			// Fire keepalive if the current tick falls within its scheduled
 			// window (e.g. 22:00 keepalive fires on the 22:00 tick even though
@@ -90,6 +139,7 @@ func runAutoCheckin() {
 	}
 	files, err := hostAuthList()
 	if err != nil {
+		hostLogf("warn", "checkin: cannot list auth files: "+err.Error())
 		return
 	}
 	var wg sync.WaitGroup
@@ -105,6 +155,10 @@ func runAutoCheckin() {
 		}()
 	}
 	wg.Wait()
+	lastCheckinMu.Lock()
+	lastAutoCheckinDay = time.Now().Format("2006-01-02")
+	lastCheckinMu.Unlock()
+	hostLogf("info", fmt.Sprintf("checkin run finished: %d account(s), checkin=%v", len(files), doCheckin))
 }
 
 // processAutoCheckinAccount handles one account's scheduled tick. Extracted so
@@ -113,24 +167,18 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	// A-24: only fetch sa when needed (checkin). For lifecycle-only paths,
 	// let reconcileOneAccount do the single hostAuthGetBundle internally.
 	if doCheckin {
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			return
-		}
-		// CN: daily check-in when enabled.
-		ci, err := fetchCheckinStatus(sa)
-		if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-			if _, callErr := performCheckinCall(sa); callErr == nil {
-				// Refresh once after a successful checkin call so cache reflects
-				// the post-call state. If the status call fails keep the pre-call
-				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
-				// with a second fetch that could race with concurrent readers).
-				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-					ci = ci2
-				}
-				// P1-5: checkin grants new credits — refresh the credits cache
-				// immediately so the panel shows the updated balance without
-				// waiting for the async reconcile pass.
+		// Share the manual endpoint's implementation instead of keeping a
+		// second, older claim flow here: this path used to call the legacy
+		// check-in directly and required ci.Active, so accounts whose daily
+		// credits come from the activity platform (active=false, empty list)
+		// were skipped and never checked in. checkinOneAccount runs the
+		// campaign flow first, treats 409 as "already", and marks the account.
+		out := checkinOneAccount(f)
+		reason, _ := out["reason"].(string)
+		if reason == "" && out["error"] == nil {
+			// Credits may have been granted; refresh the cached balance so the
+			// panel does not wait for the async reconcile pass.
+			if sa, err := hostAuthGet(f.AuthIndex); err == nil {
 				if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
 					if v, ok := accountCache.Load(f.ID); ok {
 						if prev, ok2 := v.(*accountCacheEntry); ok2 {
@@ -142,19 +190,6 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 					}
 				}
 			}
-		}
-		// Refresh cache with latest checkin status (merge, don't wipe credits/plan).
-		if ci != nil {
-			var prev *accountCacheEntry
-			if v, ok := accountCache.Load(f.ID); ok {
-				prev, _ = v.(*accountCacheEntry)
-			}
-			entry := &accountCacheEntry{checkin: ci, fetched: time.Now()}
-			if prev != nil {
-				entry.credits = prev.credits
-				entry.plan = prev.plan
-			}
-			accountCache.Store(f.ID, entry)
 		}
 		if lifecycleEnabled() {
 			_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
@@ -274,6 +309,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 			out["error"] = "campaign: " + cErr.Error()
 			return out
 		case cErr == nil && res.Earned > 0:
+			markClaimedToday(sa)
 			out["success"] = true
 			out["reward_credits"] = res.Earned
 			out["message"] = fmt.Sprintf("签到成功，+%d credits", res.Earned)
@@ -288,6 +324,7 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 			out["message"] = "同机已有账号领过今日额度"
 			return out
 		case cErr == nil && res.Claimed:
+			markClaimedToday(sa)
 			out["success"] = true
 			out["skipped"] = true
 			out["reason"] = "already"
@@ -303,6 +340,9 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		return out
 	}
 	if ci.TodayCheckedIn {
+		// Status already reports the claim; record it locally so the panel keeps
+		// showing "已签到" even after the activity disappears from the list.
+		markClaimedToday(sa)
 		out["success"] = true
 		out["skipped"] = true
 		out["reason"] = "already"
@@ -318,19 +358,23 @@ func checkinOneAccount(f pluginapi.HostAuthFileEntry) map[string]any {
 		out["error"] = "claim: " + err.Error()
 		return out
 	}
-	// Qoder returns {"result":"ALREADY_CLAIMED"} with HTTP 409 — surface
-	// as already rather than error.
-	if result, _ := res["result"].(string); result == "ALREADY_CLAIMED" {
+	// Qoder returns {"result":"ALREADY_CLAIMED"} with HTTP 409, and the
+	// campaign claim answers {"errorCode":"AlreadyExists"} — both mean today's
+	// reward is already gone, not that the call failed.
+	errorCode, _ := res["errorCode"].(string)
+	if result, _ := res["result"].(string); result == "ALREADY_CLAIMED" || strings.EqualFold(errorCode, "AlreadyExists") {
 		out["success"] = true
 		out["skipped"] = true
 		out["reason"] = "already"
 		out["message"] = "今日已签到"
+		markClaimedToday(sa)
 		if rc, ok := res["rewardCredits"].(float64); ok {
 			out["reward_credits"] = int64(rc)
 		}
 		return out
 	}
 	if success, _ := res["success"].(bool); success {
+		markClaimedToday(sa)
 		out["success"] = true
 		if rc, ok := res["rewardCredits"].(float64); ok {
 			out["reward_credits"] = int64(rc)
@@ -354,54 +398,6 @@ func checkinLockFor(authIndex string) *sync.Mutex {
 	return v.(*sync.Mutex)
 }
 
-// checkProUpgradeEligibility returns whether the account can still claim the
-// one-time Pro Upgrade pack (+1800).
-func checkProUpgradeEligibility(sa *storedAuth) (bool, error) {
-	req, err := http.NewRequest(http.MethodGet, realmOf(sa).proEligibleURL(), nil)
-	if err != nil {
-		return false, err
-	}
-	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
-	if err != nil {
-		return false, err
-	}
-	if resp.StatusCode >= 400 {
-		return false, fmt.Errorf("http %d", resp.StatusCode)
-	}
-	var m struct {
-		Eligible bool `json:"eligible"`
-	}
-	if err := json.Unmarshal(resp.Body, &m); err != nil {
-		return false, err
-	}
-	return m.Eligible, nil
-}
-
-// claimProUpgrade claims the one-time Pro Upgrade pack (+1800 credits).
-func claimProUpgrade(sa *storedAuth) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodPost, realmOf(sa).proClaimURL(), strings.NewReader("{}"))
-	if err != nil {
-		return nil, err
-	}
-	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
-	if err != nil {
-		return map[string]any{"success": false, "message": err.Error()}, nil
-	}
-	if resp.StatusCode >= 400 {
-		return map[string]any{"success": false, "message": fmt.Sprintf("http %d: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(resp.Body, &m); err != nil {
-		return nil, err
-	}
-	if _, ok := m["success"]; !ok {
-		m["success"] = true
-	}
-	return m, nil
-}
-
 // pruneCheckinLocks removes lock entries for auth indices that no longer
 // exist in hostAuthList. Call after dashboard prune.
 // Lock keys are auth_index (used for host RPC), so live map needs auth_index too.
@@ -422,53 +418,4 @@ func pruneCheckinLocks() {
 		}
 		return true
 	})
-}
-
-// handleClaimPro checks pro-upgrade eligibility for one account and claims
-// the one-time Pro pack (+ credits) when eligible. Surfaced as a panel
-// per-card button — NOT called automatically during login (login writes the
-// auth file first; this is a user-triggered post-login action).
-func handleClaimPro(req pluginapi.ManagementRequest) map[string]any {
-	var body struct {
-		AuthIndex string `json:"auth_index"`
-	}
-	_ = json.Unmarshal(req.Body, &body)
-	authIndex := strings.TrimSpace(body.AuthIndex)
-	if authIndex == "" {
-		return map[string]any{"error": "auth_index is required"}
-	}
-	sa, err := hostAuthGet(authIndex)
-	if err != nil {
-		return map[string]any{"error": "get auth: " + err.Error()}
-	}
-	out := map[string]any{
-		"auth_index": authIndex,
-		"nickname":   sa.Account.Nickname,
-	}
-	eligible, err := checkProUpgradeEligibility(sa)
-	if err != nil {
-		out["error"] = "eligibility: " + err.Error()
-		return out
-	}
-	if !eligible {
-		out["success"] = false
-		out["message"] = "不可领取（已领或活动未开放）"
-		return out
-	}
-	res, err := claimProUpgrade(sa)
-	if err != nil {
-		out["error"] = "claim: " + err.Error()
-		return out
-	}
-	for k, v := range res {
-		out[k] = v
-	}
-	if _, ok := out["success"]; !ok {
-		out["success"] = true
-	}
-	// Refresh credits snapshot so panel shows updated balance immediately.
-	if cr, crErr := fetchUserResource(sa); crErr == nil && cr != nil {
-		out["credits"] = cr
-	}
-	return out
 }

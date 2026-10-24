@@ -368,7 +368,6 @@ function bindCardActions(root){
       if(act==="checkin") checkin(idx, ev.currentTarget);
       else if(act==="select") selectAuth(idx, ev.currentTarget);
       else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
-      else if(act==="claim-pro") claimPro(idx, ev.currentTarget);
     });
   });
 }
@@ -390,8 +389,7 @@ function card(a){
   const btnClass=checked?"done":(ciActive?"sec":"done");
   const btnText=checked?"已签到":(ciActive?"签到":"不可签");
   const btnDisabled=(checked||!ciActive)?" disabled=\"disabled\"":"";
-  actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`+
-    `<button class="sec" data-action="claim-pro" data-auth-index="${esc(a.auth_index)}" title="领取Pro升级包">领取Pro</button>`;
+  actionHTML=`<button class="${btnClass}" data-action="checkin" data-auth-index="${esc(a.auth_index)}"${btnDisabled}>${btnText}</button>`;
   const selectBtn=selected
     ? `<button class="done" disabled="disabled">使用中</button>`
     : (disabled?``:`<button class="sec" data-action="select" data-auth-index="${esc(a.auth_index)}">选用</button>`);
@@ -823,20 +821,6 @@ async function checkin(idx, btn){
     await load(true);
   }catch(e){
     toast("签到请求失败","err",e.message);
-    busy(btn,false);
-  }
-}
-async function claimPro(idx, btn){
-  busy(btn,true);
-  try{
-    const d=await api("/claim-pro",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({auth_index:idx})});
-    const name=d.nickname||"账号";
-    if(d.error){toast(name+"：领取失败","err",d.error);busy(btn,false);return}
-    if(d.success){toast(name+"：领取成功","ok","Pro 升级包已领取"+(d.credits?(" · 积分 "+(d.credits.total_remain||0)):""))}
-    else{toast(name+"："+(d.message||"不可领取"),"warn")}
-    await load(true);
-  }catch(e){
-    toast("领取请求失败","err",e.message);
     busy(btn,false);
   }
 }

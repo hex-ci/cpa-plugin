@@ -157,7 +157,7 @@ func forwardUsageToCPAMP(alias, model, authID string, started time.Time, detail 
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/x-ndjson")
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFallback(req)
 	if err != nil {
 		return
 	}

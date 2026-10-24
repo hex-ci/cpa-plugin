@@ -15,7 +15,7 @@ CN（qoder.com.cn）与 Global（qoder.com）双区，多账号、动态模型�
 | **动态模型** | COSY 拉 `/algo/api/v2/model/list`（chat scene），按账号 `enable` 只暴露可用模型；元数据驱动 context / thinking 档位；`price_factor` 以 `· x0.2` 形式写进 `display_name` |
 | **思考档位** | 档位集合来自目录 `thinking_config`；请求档位按最近合法档位归一化，`none` 会同时关闭 `enable_thinking` |
 | **额度与套餐** | `quota/usage`（基础 + 赠送 + 团队共享池）与 `user/plan`；上游返回退化体时保留旧值而不是写 0 |
-| **每日额度** | 活动平台按 UTC+8 10:00 重置，自动领取（旧 sash 签到接口已废弃，返回 `DISABLED`）；一次性 Pro 升级包自动领取；Global 无该活动时显示「本区无签到」而不是报错 |
+| **每日额度** | 活动平台按 UTC+8 10:00 重置，10:00 / 21:00 定时领取（旧 sash 签到接口已废弃，返回 `DISABLED`）；进程在重置时间后才启动会补跑一次；Global 无该活动时显示「本区无签到」而不是报错 |
 | **token 保活** | 22:00 定时刷新；按 `refreshToken` 前缀路由（`drt-` → deviceToken，`jrt-` → jobToken），PAT 只做最终兜底 |
 | **面板** | 账号卡片（可用/已用/额度池/套餐/签到/选用/刷新）、汇总口径只统计可用账号、导入凭证、筛选与排序、模型目录状态条 |
 | **屏蔽词** | 与 WorkBuddy 相同的实现：命中词首字符后插入 U+200B，只改 system/developer 提示词、带注入标记（`# AGENTS.md instructions`、`<system-reminder>` 等）的用户文本和工具 `title`/`description`；默认关闭，词表可换（默认 85 词） |
@@ -106,7 +106,9 @@ auth 文件字段（可共存）：
 - **每日积分走活动平台，不是旧的 sash 签到**：旧接口 `/sash/api/v1/me/daily-check-in/*` 现在对账号返回 `DISABLED`；真正的每日 100 在 `GET /sash/api/v1/me/campaigns`（找 `claimStatus=CLAIMABLE` 且 `benefit.kind=CREDITS`），领取是 `POST .../campaigns/{id}/claim`，幂等
 - **活动接口必须用桌面身份**：`User-Agent: Qoder` + `cosy-clienttype: 10` + `cosy-version: <桌面版本>`（推理面才是 5）。缺这三个会静默返回空活动列表
 - **活动接口不能带派生机器头**：`cosy-machine*` 六头全套是派生值时，上游判定为非官方客户端并把 CLAIMABLE 活动整条过滤掉；所以活动请求只发身份三件套，不带机器头
-- 每日额度按 UTC+8 10:00 重置，自动签到因此排在 10 点后
+- 每日额度按 UTC+8 10:00 重置，自动签到因此排在 10 点后；启动晚于 10:00 时 `catchUpCheckin` 会补跑（领取接口幂等，重复调用只会返回已领）
+- **一次性 Pro 升级包活动已下线**：`/sash/api/v1/me/pro-upgrade/claim` 现在返回 `404 NotFound`，相关按钮/接口/配置项已移除
+- **调度线程里的 HTTP 不能走宿主桥**：桥在没有宿主请求上下文时回 `status 0`，定时任务会静默失败；`hostHTTPDoFallback` 先试桥、遇到 0 或错误就直连，签到/保活/额度这些元数据调用都改走它
 - **模型目录按凭证缓存，不按区域**：上游的 `enable` 是账号级权利（免费/耗尽账号可能只认两个免费模型），按区域缓存会让「先刷新的那个账号」决定同区所有账号能看到什么。现在缓存 key 是 `区域:uid`，对外发布的模型列表是同区多账号的并集（任何账号 enable 就保留，全部 disable 才隐藏），生命周期与面板计数也按凭证算
 - **模型倍率只能写在 `display_name`**：宿主的 `ModelInfo` 没有自定义字段，模型选择器、`/v1/models`（OpenAI/Claude/Codex/Gemini 各格式）能多显示的就只有它，这与 WorkBuddy 插件的做法一致（`Balanced · x0.59 credits`）。本插件的格式是 `Qwen3.8-Max · x0.2`，免费模型是 `Qwen3.8-Flash · x0.0`（CN 个人号的 Qwen3.8-Flash / DeepSeek-Flash 就是 0 倍率 + `is_free`）；目录没下发倍率时保持原名
 - **屏蔽词作用域**：只改提示词与工具元数据，assistant/tool 消息、工具 `name`、`parameters` 一律不动——改这些会破坏多轮 tool-call 或让模型解析不了参数。用户自己的话（无注入标记）也不动，只处理 harness 塞进来的 AGENTS.md / system-reminder 块

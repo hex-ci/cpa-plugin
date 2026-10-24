@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -113,7 +114,7 @@ func fetchCampaigns(sa *storedAuth) (*campaignList, error) {
 	}
 	desktopAccountHeaders(sa)(req)
 
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFallback(req)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +158,7 @@ func claimCampaign(sa *storedAuth, c campaign) (*claimOutcome, error) {
 	desktopAccountHeaders(sa)(req)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFallback(req)
 	if err != nil {
 		return nil, err
 	}
@@ -165,13 +166,20 @@ func claimCampaign(sa *storedAuth, c campaign) (*claimOutcome, error) {
 		Status      string `json:"status"`
 		Replayed    bool   `json:"replayed"`
 		FailureCode string `json:"failureCode"`
+		ErrorCode   string `json:"errorCode"`
 		CampaignID  string `json:"campaignId"`
 		Benefit     struct {
 			Amount float64 `json:"amount"`
 		} `json:"benefit"`
 	}
 	_ = json.Unmarshal(resp.Body, &raw)
-	if resp.StatusCode == http.StatusConflict || strings.EqualFold(raw.FailureCode, "ALREADY_CLAIMED") {
+	// 409 is the "already claimed" answer, in three spellings seen upstream:
+	// failureCode=ALREADY_CLAIMED, errorCode=AlreadyExists, or a bare conflict.
+	// The campaign list then keeps reporting CLAIMABLE for the rest of the day,
+	// so this is the only signal that today's reward is gone.
+	if resp.StatusCode == http.StatusConflict ||
+		strings.EqualFold(raw.FailureCode, "ALREADY_CLAIMED") ||
+		strings.EqualFold(raw.ErrorCode, "AlreadyExists") {
 		return &claimOutcome{Status: "CLAIMED", Replayed: true, CampaignID: c.CampaignID, Amount: c.creditAmount()}, nil
 	}
 	if resp.StatusCode >= 400 {
@@ -188,6 +196,45 @@ func claimCampaign(sa *storedAuth, c campaign) (*claimOutcome, error) {
 		out.Amount = int64(raw.Benefit.Amount)
 	}
 	return out, nil
+}
+
+var (
+	claimedTodayMu     sync.Mutex
+	claimedTodayByUser = map[string]string{} // account uid -> YYYY-MM-DD
+)
+
+// markClaimedToday records that this account's daily reward was granted (or was
+// already gone). The remote campaign list lags behind the claim, so the panel
+// would otherwise keep offering "签到" for the rest of the day.
+func markClaimedToday(sa *storedAuth) {
+	key := claimMarkerFor(sa)
+	if key == "" {
+		return
+	}
+	claimedTodayMu.Lock()
+	claimedTodayByUser[key] = time.Now().Format("2006-01-02")
+	claimedTodayMu.Unlock()
+}
+
+func claimedToday(sa *storedAuth) bool {
+	key := claimMarkerFor(sa)
+	if key == "" {
+		return false
+	}
+	claimedTodayMu.Lock()
+	day := claimedTodayByUser[key]
+	claimedTodayMu.Unlock()
+	return day == time.Now().Format("2006-01-02")
+}
+
+func claimMarkerFor(sa *storedAuth) string {
+	if sa == nil {
+		return ""
+	}
+	if uid := strings.TrimSpace(sa.Account.UID); uid != "" {
+		return uid
+	}
+	return strings.TrimSpace(sa.Auth.AccessToken)
 }
 
 // campaignCheckinResult summarises one account's activity check-in.

@@ -34,7 +34,6 @@ type pluginConfig struct {
 	Scheduler        string // off | credits
 
 	CheckinAuto     bool
-	ProClaimAuto    bool
 	TokenKeepalive  bool
 	LifecycleAuto   bool
 	QueueWait       bool
@@ -67,7 +66,6 @@ func defaultPluginConfig() pluginConfig {
 		RealmDefault:    realmCN,
 		Scheduler:       schedulerModeOff,
 		CheckinAuto:     true,
-		ProClaimAuto:    true,
 		// Token keepalive is on by default: Qoder's dt-/drt- pair goes stale
 		// while idle and a stale refresh token needs a fresh login.
 		TokenKeepalive: true,
@@ -213,8 +211,6 @@ func (c *pluginConfig) apply(key string, val *yaml.Node) error {
 		return decodeString(val, &c.ManagementKey)
 	case "checkin_auto":
 		return decodeBool(val, &c.CheckinAuto)
-	case "pro_claim_auto":
-		return decodeBool(val, &c.ProClaimAuto)
 	case "token_keepalive":
 		return decodeBool(val, &c.TokenKeepalive)
 	case "lifecycle_auto":

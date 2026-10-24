@@ -148,3 +148,74 @@ func TestBuildRefreshedAuthJSONPreservesExistingPhysicalFields(t *testing.T) {
 		t.Errorf("weight = %v, want 5", got)
 	}
 }
+
+// Routing knobs live at the top level, but other tooling and hand edits also
+// add keys inside auth/account. Replacing those sections wholesale silently
+// deleted them on every note sync or token refresh.
+func TestAuthFileJSONPreservesNestedSectionExtras(t *testing.T) {
+	physical := []byte(`{"type":"qoder","prefix":"qd","auth":{"accessToken":"old_at","refreshToken":"old_rt","session_hint":"keep"},"account":{"uid":"u1","nickname":"n","email":"a@b.c"}}`)
+	sa := &storedAuth{
+		Auth:    storedTokens{AccessToken: "new_at", RefreshToken: "new_rt"},
+		Account: storedAccount{UID: "u1", Nickname: "n"},
+	}
+	raw, err := buildAuthFileJSON(physical, sa, false, "CN · note", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	auth := doc["auth"].(map[string]any)
+	if auth["accessToken"] != "new_at" {
+		t.Errorf("token not refreshed: %#v", auth)
+	}
+	if auth["session_hint"] != "keep" {
+		t.Errorf("nested auth extra dropped: %#v", auth)
+	}
+	account := doc["account"].(map[string]any)
+	if account["email"] != "a@b.c" {
+		t.Errorf("nested account extra dropped: %#v", account)
+	}
+	if doc["prefix"] != "qd" {
+		t.Errorf("prefix = %v", doc["prefix"])
+	}
+}
+
+func TestRefreshedAuthJSONPreservesNestedSectionExtras(t *testing.T) {
+	physical := []byte(`{"type":"qoder","weight":4,"auth":{"accessToken":"old_at","refreshToken":"old_rt","session_hint":"keep"},"account":{"uid":"u1","email":"a@b.c"}}`)
+	sa := &storedAuth{
+		Auth:    storedTokens{AccessToken: "new_at", RefreshToken: "new_rt"},
+		Account: storedAccount{UID: "u1"},
+	}
+	raw, err := buildRefreshedAuthJSON(physical, sa)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	auth := doc["auth"].(map[string]any)
+	if auth["session_hint"] != "keep" {
+		t.Errorf("nested auth extra dropped: %#v", auth)
+	}
+	if doc["account"].(map[string]any)["email"] != "a@b.c" {
+		t.Errorf("nested account extra dropped: %#v", doc["account"])
+	}
+	if doc["weight"] != float64(4) {
+		t.Errorf("weight = %v", doc["weight"])
+	}
+}
+
+// A non-object section must not abort the write.
+func TestMergeSectionToleratesUnexpectedShape(t *testing.T) {
+	merged := mergeSection("not-a-map", map[string]any{"k": "v"})
+	m, ok := merged.(map[string]any)
+	if !ok || m["k"] != "v" {
+		t.Fatalf("merged = %#v", merged)
+	}
+	if got, ok := mergeSection(nil, map[string]any{"k": "v"}).(map[string]any); !ok || got["k"] != "v" {
+		t.Fatalf("nil existing section = %#v", got)
+	}
+}

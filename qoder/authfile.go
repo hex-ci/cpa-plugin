@@ -192,8 +192,11 @@ func buildAuthFileJSON(physical []byte, sa *storedAuth, disabled bool, note stri
 	out["logo"] = pluginLogoURL
 	out["disabled"] = disabled
 	out["note"] = note
-	out["auth"] = nested["auth"]
-	out["account"] = nested["account"]
+	// Only the fields this plugin owns are replaced inside auth/account: the
+	// host and hand edits add keys there too (e.g. an email or a proxy note),
+	// and a blind overwrite would silently delete them on every refresh.
+	out["auth"] = mergeSection(out["auth"], nested["auth"])
+	out["account"] = mergeSection(out["account"], nested["account"])
 	for k, v := range extra {
 		out[k] = v
 	}
@@ -216,9 +219,65 @@ func buildRefreshedAuthJSON(physical []byte, sa *storedAuth) ([]byte, error) {
 	if err := json.Unmarshal(storage, &nested); err != nil {
 		return nil, err
 	}
-	doc["auth"] = nested["auth"]
-	doc["account"] = nested["account"]
-	return json.Marshal(doc)
+	merged, err := mergeSectionRaw(doc, nested)
+	if err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+// mergeSection overlays owned onto existing and returns a map. Keys the plugin
+// does not write are kept, so hand-added or host-added fields survive a refresh.
+func mergeSection(existing, owned any) any {
+	base, okBase := existing.(map[string]any)
+	add, okAdd := owned.(map[string]any)
+	if !okAdd {
+		return existing
+	}
+	if !okBase {
+		return add
+	}
+	for k, v := range add {
+		base[k] = v
+	}
+	return base
+}
+
+// mergeSectionRaw is mergeSection for raw-JSON documents.
+func mergeSectionRaw(doc, owned map[string]json.RawMessage) ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(doc))
+	for k, v := range doc {
+		out[k] = v
+	}
+	for _, section := range []string{"auth", "account"} {
+		merged, err := mergeSectionRawOne(out[section], owned[section])
+		if err != nil {
+			return nil, err
+		}
+		out[section] = merged
+	}
+	return json.Marshal(out)
+}
+
+func mergeSectionRawOne(existing, owned json.RawMessage) (json.RawMessage, error) {
+	var add map[string]json.RawMessage
+	if len(owned) == 0 {
+		return existing, nil
+	}
+	if err := json.Unmarshal(owned, &add); err != nil {
+		return nil, err
+	}
+	merged := map[string]json.RawMessage{}
+	if len(existing) > 0 {
+		if err := json.Unmarshal(existing, &merged); err != nil {
+			// A non-object section cannot be merged; take the owned one.
+			merged = map[string]json.RawMessage{}
+		}
+	}
+	for k, v := range add {
+		merged[k] = v
+	}
+	return json.Marshal(merged)
 }
 
 // physJSON returns the raw auth file the host holds, tolerating a nil record.

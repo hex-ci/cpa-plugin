@@ -43,7 +43,7 @@ func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 		return nil, err
 	}
 	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFallback(req)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +84,7 @@ func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 	// state instead of "不可签".
 	if currentConfig().CampaignCheckin {
 		if cl, cerr := fetchCampaigns(sa); cerr == nil {
-			mergeCampaignState(sum, cl)
+			mergeCampaignState(sum, cl, sa)
 		}
 	}
 	return sum, nil
@@ -92,7 +92,7 @@ func fetchCheckinStatus(sa *storedAuth) (*checkinSummary, error) {
 
 // mergeCampaignState folds the activity list into the check-in summary. Legacy
 // fields win only when they carry a real value: the campaign is the live source.
-func mergeCampaignState(sum *checkinSummary, list *campaignList) {
+func mergeCampaignState(sum *checkinSummary, list *campaignList, sa *storedAuth) {
 	if sum == nil || list == nil {
 		return
 	}
@@ -121,6 +121,15 @@ func mergeCampaignState(sum *checkinSummary, list *campaignList) {
 		}
 	}
 	if activity == "" {
+		// No campaign is published for this account. That is also what a
+		// claimed-out day looks like (upstream withdraws the activity once the
+		// reward is gone), so a local grant still has to show as checked.
+		if !sum.TodayCheckedIn && claimedToday(sa) {
+			sum.TodayCheckedIn = true
+			if sum.TodayCredit == 0 {
+				sum.TodayCredit = sum.DailyCredit
+			}
+		}
 		return
 	}
 	sum.Active = true
@@ -133,6 +142,14 @@ func mergeCampaignState(sum *checkinSummary, list *campaignList) {
 	sum.TodayCheckedIn = claimed && !claimable
 	if claimedAmount > 0 && sum.TodayCredit == 0 {
 		sum.TodayCredit = claimedAmount
+	}
+	// The list can still say CLAIMABLE after a successful claim (upstream lag),
+	// so a local grant wins over it.
+	if !sum.TodayCheckedIn && claimedToday(sa) {
+		sum.TodayCheckedIn = true
+		if sum.TodayCredit == 0 && amount > 0 {
+			sum.TodayCredit = amount
+		}
 	}
 }
 
@@ -168,7 +185,7 @@ func fetchUserResource(sa *storedAuth) (*creditsSummary, error) {
 		return nil, err
 	}
 	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFallback(req)
 	if err != nil {
 		return nil, err
 	}
@@ -215,7 +232,7 @@ func fetchPlanInfo(sa *storedAuth) (tier, userType string, err error) {
 		return "", "", reqErr
 	}
 	billingHeaders(req, sa)
-	resp, respErr := hostHTTPDo(req)
+	resp, respErr := hostHTTPDoFallback(req)
 	if respErr != nil {
 		return "", "", respErr
 	}
@@ -244,9 +261,14 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 		return nil, err
 	}
 	billingHeaders(req, sa)
-	resp, err := hostHTTPDo(req)
+	resp, err := hostHTTPDoFallback(req)
 	if err != nil {
 		return map[string]any{"success": false, "message": err.Error()}, nil
+	}
+	// A 409 carrying AlreadyExists is "today's reward is gone", not a failure:
+	// surface it in the shape checkinOneAccount already understands.
+	if resp.StatusCode == http.StatusConflict && strings.Contains(strings.ToLower(string(resp.Body)), "alreadyexists") {
+		return map[string]any{"success": true, "result": "ALREADY_CLAIMED", "errorCode": "AlreadyExists"}, nil
 	}
 	if resp.StatusCode >= 400 {
 		return map[string]any{"success": false, "message": fmt.Sprintf("http %d: %s", resp.StatusCode, truncateRedacted(string(resp.Body), 200))}, nil

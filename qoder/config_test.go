@@ -16,7 +16,7 @@ func TestConfigDefaults(t *testing.T) {
 	if c.RealmDefault != realmCN {
 		t.Fatalf("realm_default = %q, want cn", c.RealmDefault)
 	}
-	if !c.CheckinAuto || !c.TokenKeepalive || !c.LifecycleAuto || !c.QueueWait || !c.ProClaimAuto {
+	if !c.CheckinAuto || !c.TokenKeepalive || !c.LifecycleAuto || !c.QueueWait {
 		t.Fatalf("boolean defaults = %#v, want them all enabled", c)
 	}
 	if c.ModelListBody != modelListBodyKWM {
@@ -33,7 +33,6 @@ cosy_version: "1.2.3"
 realm_default: global
 scheduler_mode: credits
 checkin_auto: false
-pro_claim_auto: false
 token_keepalive: false
 lifecycle_auto: false
 queue_wait: false
@@ -60,7 +59,7 @@ models:
 	if c.CosyVersion != "1.2.3" || c.RealmDefault != realmGlobal || c.Scheduler != schedulerModeCredits {
 		t.Fatalf("scalars = %#v", c)
 	}
-	if c.CheckinAuto || c.TokenKeepalive || c.LifecycleAuto || c.QueueWait || c.ProClaimAuto {
+	if c.CheckinAuto || c.TokenKeepalive || c.LifecycleAuto || c.QueueWait {
 		t.Fatalf("booleans = %#v, want them all disabled", c)
 	}
 	if c.QueueMaxWait != 120 || c.CosyMachineOS != "x86_64_win32" || c.ModelListBody != modelListBodyEmpty {

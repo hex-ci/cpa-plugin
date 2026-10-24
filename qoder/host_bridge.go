@@ -190,6 +190,34 @@ func hostHTTPDoDirect(req *http.Request, bodyBytes []byte) (*hostHTTPResponse, e
 	}, nil
 }
 
+// hostHTTPDoFallback prefers the host bridge and retries directly when it
+// answers status 0.
+//
+// Status 0 is how the bridge reports "this call did not come from a host
+// request": scheduled work (daily check-in, token keepalive) and cache warm-up
+// run on plugin goroutines, and there the bridge has no request context to
+// attach. Metadata calls have no streaming requirement, so a direct request is
+// the correct fallback — the catalogue fetch always does this.
+func hostHTTPDoFallback(req *http.Request) (*hostHTTPResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("nil request")
+	}
+	var bodyBytes []byte
+	if req.Body != nil {
+		b, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+		_ = req.Body.Close()
+		bodyBytes = b
+	}
+	resp, err := hostHTTPDo(req)
+	if err == nil && resp != nil && resp.StatusCode != 0 {
+		return resp, nil
+	}
+	return hostHTTPDoDirect(req, bodyBytes)
+}
+
 // hostHTTPStream is a handle for an in-flight host-bridged stream. Read returns
 // the next chunk; Close aborts the upstream.
 //
