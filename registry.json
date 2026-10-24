@@ -78,7 +78,7 @@
       "name": "Qoder",
       "description": "Qoder (qoder.com / qoder.com.cn) provider for CLIProxyAPI: CN + Global realms, OAuth device authorization + PAT import, COSY-signed chat executor, catalog-driven models (context/effort/price factor), queue-aware retries, daily credits via the activity platform, Pro pack claim, token keepalive, accounts panel.",
       "author": "Hex",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "repository": "https://github.com/hex-ci/cpa-plugin",
       "logo": "https://raw.githubusercontent.com/hex-ci/cpa-plugin/main/qoder/assets/qoder.png",
       "homepage": "https://github.com/hex-ci/cpa-plugin/tree/main/qoder",
@@ -96,51 +96,51 @@
           {
             "goos": "linux",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_linux_amd64.zip",
-            "sha256": "3ce50fbe1bd78a1ac2dcefd017974cc690146152dc4d8f6948e7ba0c4447dae1",
-            "size": 3304571
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_linux_amd64.zip",
+            "sha256": "8936a44de6c521f4cd7bc7d3b8b76d35e1642f6f2db7e2e3edbe1292ed1e179f",
+            "size": 3307409
           },
           {
             "goos": "linux",
             "goarch": "arm64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_linux_arm64.zip",
-            "sha256": "db336217312a2e444225a04bb41baa88db9bbbaad1d2cd1462fa4ed901988cf0",
-            "size": 3004791
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_linux_arm64.zip",
+            "sha256": "5d8b042e1c5869fd5717468680cc9bc7f087a86c7c7bf20472fa5809b3f9220f",
+            "size": 3006436
           },
           {
             "goos": "darwin",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_darwin_amd64.zip",
-            "sha256": "ad632eb7b2ef55e94da118079b2273ce81bef1468ae5089151fa13447689d923",
-            "size": 3150269
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_darwin_amd64.zip",
+            "sha256": "a1fd1a85af52de9735e26355c010a1cd985c619f2bc0563bc94f520b0743e507",
+            "size": 3151456
           },
           {
             "goos": "darwin",
             "goarch": "arm64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_darwin_arm64.zip",
-            "sha256": "8eb075bb15fcc9afaeab470adbfc590718eb780951f6c53dc43ccd412155ec10",
-            "size": 2910371
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_darwin_arm64.zip",
+            "sha256": "07442eb17aebbc9d17b3973ca2279e874e3c7161319776997934403caf4f1149",
+            "size": 2911797
           },
           {
             "goos": "windows",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_windows_amd64.zip",
-            "sha256": "17ad447700827c7b0b984208467d0bc93b4f30c0162cbf7daeafadac5b33d91d",
-            "size": 3232718
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_windows_amd64.zip",
+            "sha256": "c358d36453bbfaf5e48d1e929add82a550fd9f076abdafb61036db5175ea2512",
+            "size": 3233751
           },
           {
             "goos": "windows",
             "goarch": "arm64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_windows_arm64.zip",
-            "sha256": "e85da40c1a17f16c155e28424ef1aaf804b40f4f76de0f4c660a0de44e4b5314",
-            "size": 2993672
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_windows_arm64.zip",
+            "sha256": "099263036a92b68dcafc40a905a0f8958876c624c0c52ca7b291d6884a3c4347",
+            "size": 2994857
           },
           {
             "goos": "freebsd",
             "goarch": "amd64",
-            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.0/qoder_1.0.0_freebsd_amd64.zip",
-            "sha256": "23441c50fb7adbfafb04dcd0b483487f84d673b085365240e1b2233ad459586d",
-            "size": 3223596
+            "url": "https://github.com/hex-ci/cpa-plugin/releases/download/qoder-v1.0.1/qoder_1.0.1_freebsd_amd64.zip",
+            "sha256": "d330ec20e539f0f064c96953df00474b2ecd5f6150ca0b454ad792f66db7cc6a",
+            "size": 3225324
           }
         ]
       }
