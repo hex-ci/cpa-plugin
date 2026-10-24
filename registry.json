@@ -76,7 +76,7 @@
     {
       "id": "qoder",
       "name": "Qoder",
-      "description": "Qoder (qoder.com / qoder.com.cn) provider for CLIProxyAPI: CN + Global realms, OAuth device authorization + PAT import, COSY-signed chat executor, catalog-driven models (context/effort/price factor), queue-aware retries, daily credits via the activity platform, Pro pack claim, token keepalive, accounts panel.",
+      "description": "Qoder (qoder.com / qoder.com.cn) provider for CLIProxyAPI: CN + Global realms, OAuth device authorization + PAT import, COSY-signed chat executor, catalog-driven models (context/effort/price factor), queue-aware retries, daily credits via the activity platform, token keepalive, accounts panel.",
       "author": "Hex",
       "version": "1.1.0",
       "repository": "https://github.com/hex-ci/cpa-plugin",
