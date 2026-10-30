@@ -84,11 +84,15 @@ var (
 func buildModelStatus(files []pluginapi.HostAuthFileEntry) modelStatus {
 	runtime := activeModelRuntime.Load()
 	state := modelReady
-	if len(files) == 0 {
-		state = modelNotStarted
-	}
 	auths := make([]modelAuthStatus, 0, len(files))
 	for _, file := range files {
+		// The host never asks a disabled credential for its catalogue, so its
+		// snapshot can only stay not_started forever. Counting it in the
+		// aggregate would pin the status bar to "not initialised" for as long
+		// as a single account is disabled.
+		if file.Disabled {
+			continue
+		}
 		snapshot := modelReadinessSnapshot{State: modelNotStarted, ModelSource: modelSourceNone}
 		if runtime != nil {
 			snapshot = runtime.snapshotForAuthID(file.ID)
@@ -103,6 +107,9 @@ func buildModelStatus(files []pluginapi.HostAuthFileEntry) modelStatus {
 		if modelStatePriority[snapshot.State] > modelStatePriority[state] {
 			state = snapshot.State
 		}
+	}
+	if len(auths) == 0 {
+		state = modelNotStarted
 	}
 	return modelStatus{
 		State:   state,

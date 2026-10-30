@@ -140,6 +140,43 @@ func TestBuildModelStatusAggregationPriority(t *testing.T) {
 	}
 }
 
+func TestBuildModelStatusSkipsDisabledAuths(t *testing.T) {
+	installModelStatesForTest(t, map[string]modelReadinessState{
+		"internal-ready":    modelReady,
+		"internal-disabled": modelNotStarted,
+	})
+	got := buildModelStatus([]pluginapi.HostAuthFileEntry{
+		{ID: "internal-ready", AuthIndex: "account-ready"},
+		{ID: "internal-disabled", AuthIndex: "account-disabled", Disabled: true},
+	})
+	if got.State != modelReady || got.Message != "模型目录已就绪" {
+		t.Fatalf("state = %q, message = %q; want ready", got.State, got.Message)
+	}
+	if len(got.Auths) != 1 || got.Auths[0].AuthIndex != "account-ready" {
+		t.Fatalf("auth statuses = %#v", got.Auths)
+	}
+}
+
+func TestBuildModelStatusAllDisabledIsNotStarted(t *testing.T) {
+	// A stale ready snapshot on a disabled credential must not leak into the
+	// aggregate: disabled accounts are never refreshed by the host.
+	installModelStatesForTest(t, map[string]modelReadinessState{"internal-disabled": modelReady})
+	got := buildModelStatus([]pluginapi.HostAuthFileEntry{
+		{ID: "internal-disabled", AuthIndex: "account-disabled", Disabled: true},
+	})
+	if got.State != modelNotStarted || len(got.Auths) != 0 {
+		t.Fatalf("status = %#v", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"state":"not_started","message":"模型目录尚未初始化","auths":[]}`
+	if string(raw) != want {
+		t.Fatalf("status JSON = %s, want %s", raw, want)
+	}
+}
+
 func TestBuildModelStatusZeroAuthHasExactShapeAndNonNilAuths(t *testing.T) {
 	installModelStatesForTest(t, nil)
 	got := buildModelStatus(nil)
