@@ -108,6 +108,61 @@ function fakeResponse(status, contentType, body) {
   };
 }
 
+const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
+// Mirrors how the management center writes localStorage["cli-proxy-auth"]:
+// XOR + base64 under enc::v2:: (salt|host) or the legacy enc::v1:: (salt|host|UA).
+function panelStoreBlob(state, { host, userAgent, version }) {
+  const material = version === 1 ? `${SECRET_SALT}|${host}|${userAgent}` : `${SECRET_SALT}|${host}`;
+  const key = Buffer.from(material, "utf8");
+  const data = Buffer.from(state, "utf8");
+  const out = Buffer.alloc(data.length);
+  for (let i = 0; i < data.length; i += 1) out[i] = data[i] ^ key[i % key.length];
+  return `enc::v${version}::` + out.toString("base64");
+}
+
+function panelStore(localStorageValue) {
+  return {
+    localStorage: {
+      getItem(key) { return key === "cli-proxy-auth" ? localStorageValue : null; },
+      setItem() {},
+    },
+  };
+}
+
+test("management key comes from the management center store (enc::v2::)", () => {
+  const raw = panelStoreBlob(
+    JSON.stringify({ state: { managementKey: "center-key" }, version: 0 }),
+    { host: "localhost", userAgent: "node-test", version: 2 },
+  );
+  const { context } = loadPanel(panelStore(raw));
+  assert.equal(context.getKey(), "center-key");
+});
+
+test("legacy enc::v1:: store entries still decode", () => {
+  const raw = panelStoreBlob(
+    JSON.stringify({ state: { managementKey: "legacy-key" }, version: 0 }),
+    { host: "localhost", userAgent: "node-test", version: 1 },
+  );
+  const { context } = loadPanel(panelStore(raw));
+  assert.equal(context.getKey(), "legacy-key");
+});
+
+test("a store entry without a remembered key never fires a request", async () => {
+  const raw = panelStoreBlob(
+    JSON.stringify({ state: { managementKey: "", rememberPassword: false }, version: 0 }),
+    { host: "localhost", userAgent: "node-test", version: 2 },
+  );
+  let calls = 0;
+  const { context, elements } = loadPanel({
+    ...panelStore(raw),
+    fetch: async () => { calls += 1; throw new Error("unexpected fetch"); },
+  });
+  assert.equal(context.getKey(), null);
+  assert.equal(await context.load(false), false);
+  assert.equal(calls, 0);
+  assert.equal(elements.get("authBox").style.display, "block");
+});
+
 test("query key replaces session key once and is removed from URL", () => {
   let replaced = "";
   let localWrites = 0;
