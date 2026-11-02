@@ -19,16 +19,20 @@ const scriptSource = [...panelHTML.matchAll(/<script>([\s\S]*?)<\/script>/g)]
   .replace("__TW_MANAGEMENT_BASE_PATH_JSON__", JSON.stringify("/v0/management"));
 
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
-const ENC_PREFIX = "enc::v1::";
+const ENC_PREFIX_V1 = "enc::v1::";
+const ENC_PREFIX_V2 = "enc::v2::";
 
-// Mirror of the panel's own obfuscation, used to fabricate the CPA main
-// panel's localStorage entry exactly as the host writes it.
-function obfuscate(plain, host, userAgent) {
-  const key = Buffer.from(`${SECRET_SALT}|${host}|${userAgent}`, "utf8");
+// Mirror of the management center's obfuscation: enc::v2:: binds salt|host and
+// the legacy enc::v1:: additionally mixes in the user agent.
+function obfuscate(plain, host, userAgent, version = 1) {
+  const material = version === 1
+    ? `${SECRET_SALT}|${host}|${userAgent}`
+    : `${SECRET_SALT}|${host}`;
+  const key = Buffer.from(material, "utf8");
   const data = Buffer.from(plain, "utf8");
   const out = Buffer.alloc(data.length);
   for (let i = 0; i < data.length; i += 1) out[i] = data[i] ^ key[i % key.length];
-  return ENC_PREFIX + out.toString("base64");
+  return (version === 1 ? ENC_PREFIX_V1 : ENC_PREFIX_V2) + out.toString("base64");
 }
 
 function fakeElement(tag = "div") {
@@ -215,6 +219,7 @@ test("panel reads the management key from the CPA panel store when embedded", as
     JSON.stringify({ state: { managementKey: "from-panel-store" } }),
     "127.0.0.1:8317",
     "test-agent",
+    2,
   );
   const { calls } = runPanel({
     embedded: true,
@@ -225,6 +230,25 @@ test("panel reads the management key from the CPA panel store when embedded", as
   assert.ok(calls.length >= 1);
   for (const call of calls) {
     assert.equal(call.headers.Authorization, "Bearer from-panel-store");
+  }
+});
+
+test("legacy enc::v1:: store entries still decode", async () => {
+  const raw = obfuscate(
+    JSON.stringify({ state: { managementKey: "legacy-store-key" } }),
+    "127.0.0.1:8317",
+    "test-agent",
+    1,
+  );
+  const { calls } = runPanel({
+    embedded: true,
+    storage: { "cli-proxy-auth": raw },
+    payload: { count: 0, accounts: [] },
+  });
+  await tick();
+  assert.ok(calls.length >= 1);
+  for (const call of calls) {
+    assert.equal(call.headers.Authorization, "Bearer legacy-store-key");
   }
 });
 
@@ -248,16 +272,21 @@ test("panel sends no key when the store holds something unusable", async () => {
   assert.equal(calls.length, 0);
 });
 
-test("panel ignores the panel store when it is not embedded", async () => {
+// localStorage is same-origin data, so a panel opened in its own tab can use the
+// same source as an embedded one.
+test("panel reads the store when opened outside the management UI", async () => {
   const raw = obfuscate(
-    JSON.stringify({ state: { managementKey: "should-not-be-used" } }),
+    JSON.stringify({ state: { managementKey: "standalone-key" } }),
     "127.0.0.1:8317",
     "test-agent",
+    2,
   );
   const { calls } = runPanel({ storage: { "cli-proxy-auth": raw }, payload: { count: 0, accounts: [] } });
   await tick();
-  // Standalone and keyless: the store is not a legitimate source, so no request.
-  assert.equal(calls.length, 0);
+  assert.ok(calls.length >= 1);
+  for (const call of calls) {
+    assert.equal(call.headers.Authorization, "Bearer standalone-key");
+  }
 });
 
 test("panel renders one card per account plus the quota summary", async () => {

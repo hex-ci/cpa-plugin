@@ -245,9 +245,10 @@ const API=MANAGEMENT_BASE_PATH+"/plugins/traework";
 /* ---------- management key acquisition ----------
    1) ?key= URL param (kept in sessionStorage, scrubbed from the address bar).
    2) sessionStorage from an earlier visit or a manual entry.
-   3) the CPA main panel's localStorage "cli-proxy-auth" (XOR+base64,
-      same-origin iframe embed) — the approach the host's own plugin pages use. */
-const ENC_PREFIX = "enc::v1::";
+   3) the CPA management center's localStorage "cli-proxy-auth" (XOR+base64,
+      same-origin): enc::v2:: binds salt|host, legacy enc::v1:: adds the UA. */
+const ENC_PREFIX_V2 = "enc::v2::";
+const ENC_PREFIX_V1 = "enc::v1::";
 const SECRET_SALT = "cli-proxy-api-webui::secure-storage";
 const PANEL_STORE = "cli-proxy-auth";
 const SS_KEY = "traework-mgmt-key";
@@ -258,14 +259,19 @@ function storeSessionKey(key){try{sessionStorage.setItem(SS_KEY,key);sessionKeyS
 function clearSessionKey(){sessionKeySuppressed=true;try{sessionStorage.removeItem(SS_KEY)}catch(_){}}
 function _enc(t){return new TextEncoder().encode(t)}
 function _dec(b){return new TextDecoder().decode(b)}
-function _keyBytes(){try{return _enc(SECRET_SALT+"|"+window.location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _keyBytes(withAgent){try{return _enc(SECRET_SALT+"|"+window.location.host+(withAgent?"|"+navigator.userAgent:""))}catch(e){return _enc(SECRET_SALT)}}
 function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
 function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
-function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
-function isEmbedded(){try{return window.self!==window.top}catch(e){return false}}
+function deobfuscate(p){
+  if(!p)return p;
+  let withAgent;
+  if(p.startsWith(ENC_PREFIX_V2))withAgent=false;
+  else if(p.startsWith(ENC_PREFIX_V1))withAgent=true;
+  else return p;
+  try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX_V1.length)),_keyBytes(withAgent)))}catch(e){return p}
+}
 
 function readPanelKey(){
-  if(!isEmbedded())return null;
   let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
   if(!raw)return null;
   try{
