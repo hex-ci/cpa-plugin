@@ -83,6 +83,9 @@ jobs:
       matrix:
         include:
           # WorkBuddy native
+          # darwin/arm64 builds on the Intel image: GitHub's macOS arm64
+          # runners are capacity-constrained, and Go cross-compiles cgo for
+          # arm64 on darwin by passing `-arch arm64` to the same clang.
           - id: workbuddy
             goos: linux
             goarch: amd64
@@ -101,7 +104,7 @@ jobs:
           - id: workbuddy
             goos: darwin
             goarch: arm64
-            runner: macos-15
+            runner: macos-15-intel
             ext: dylib
           - id: workbuddy
             goos: windows
@@ -127,7 +130,7 @@ jobs:
           - id: qoder
             goos: darwin
             goarch: arm64
-            runner: macos-15
+            runner: macos-15-intel
             ext: dylib
           - id: qoder
             goos: windows
@@ -153,7 +156,7 @@ jobs:
           - id: qwenwork
             goos: darwin
             goarch: arm64
-            runner: macos-15
+            runner: macos-15-intel
             ext: dylib
           - id: qwenwork
             goos: windows
@@ -179,7 +182,7 @@ jobs:
           - id: traework
             goos: darwin
             goarch: arm64
-            runner: macos-15
+            runner: macos-15-intel
             ext: dylib
           - id: traework
             goos: windows
