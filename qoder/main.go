@@ -171,6 +171,12 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}
 	raw, errHandle := handleMethod(C.GoString(method), requestBytes)
 	if errHandle != nil {
+		// A classified failure keeps its HTTP status; anything else is a
+		// plugin-side fault and stays a 500.
+		if classified, ok := failureEnvelope(errHandle); ok {
+			writeResponse(response, classified)
+			return 0
+		}
 		writeResponse(response, errorEnvelope("plugin_error", errHandle.Error()))
 		return 1
 	}
@@ -293,7 +299,7 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 type envelope struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
-	Error  *envelopeError  `json:"error,omitempty"`
+	Error  any             `json:"error,omitempty"`
 }
 
 type envelopeError struct {
@@ -787,6 +793,7 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 	var stream *hostHTTPStream
 	var statusCode int
 	var streamErr error
+	var upstream io.Reader
 	queueCfg := currentConfig()
 	for attempt := 0; ; attempt++ {
 		httpReq, reqErr := newChatRequest(context.Background(), sa, encodedBody, chatURL, upstreamModel)
@@ -800,7 +807,22 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			return nil, fmt.Errorf("http_error: %w", streamErr)
 		}
 		if statusCode < 400 {
-			break
+			sig, queued, rest, peekErr := peekQueueSignal(newHostStreamReader(stream))
+			if !queued {
+				if peekErr != nil && rest == nil {
+					stream.Close()
+					publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, peekErr.Error())
+					return nil, fmt.Errorf("upstream stream read error: %w", peekErr)
+				}
+				upstream = rest
+				break
+			}
+			stream.Close()
+			if waitErr := queueWaitGate(sa, upstreamModel, sig, attempt); waitErr != nil {
+				publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, waitErr.Error())
+				return nil, waitErr
+			}
+			continue
 		}
 		payload, _ := io.ReadAll(newHostStreamReader(stream))
 		stream.Close()
@@ -809,20 +831,23 @@ func handleExecExecute(raw []byte) ([]byte, error) {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(payload))
 			reconcileAfterExecutorError(req.AuthID, statusCode, string(payload))
 			if isQueue {
-				return nil, queuedError(signal.Detail, time.Duration(signal.RetryAfter)*time.Second)
+				return nil, newPluginFailure(queueBusyDetail(signal, time.Duration(signal.RetryAfter)*time.Second))
 			}
-			return nil, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
+			return nil, newPluginFailure(upstreamFailureDetail(statusCode, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))))
 		}
 		hostLogf("info", fmt.Sprintf("model queue: %s busy, waiting %ds (attempt %d)", upstreamModel, signal.RetryAfter, attempt+1))
 		if waitErr := awaitQueueTurn(context.Background(), sa, newRequestSetID(), upstreamModel,
 			time.Duration(queueCfg.QueueMaxWait)*time.Second,
 			time.Duration(signal.RetryAfter)*time.Second, nil); waitErr != nil {
 			publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, waitErr.Error())
-			return nil, queuedError(signal.Detail, time.Duration(queueCfg.QueueMaxWait)*time.Second)
+			return nil, newPluginFailure(queueBusyDetail(signal, time.Duration(queueCfg.QueueMaxWait)*time.Second))
 		}
 	}
 	defer stream.Close()
-	reader := rawDumpReader(newHostStreamReader(stream))
+	if upstream == nil {
+		upstream = newHostStreamReader(stream)
+	}
+	reader := rawDumpReader(upstream)
 	completion, err := aggregateQoderSSE(reader, req.Model)
 	if err != nil {
 		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
@@ -899,29 +924,21 @@ func handleExecStream(raw []byte) ([]byte, error) {
 		return okEnvelope(streamResponse{Headers: headers, Chunks: chunks})
 	}
 
-	// Async: return immediately with empty chunks. A goroutine pumps the upstream
-	// and emits each chunk via host.stream.emit so the client sees true streaming.
-	// Use context.Background() (not nil) so the request can be cancelled when the
-	// client disconnects — otherwise the pump keeps reading a dead upstream until
-	// sharedHTTPClient's 120s timeout, holding a pool slot the whole time.
+	// Open the upstream synchronously, before any response is returned to the
+	// host. A stream that has already answered 200 can only report failures as
+	// in-band error frames, so a queue/timeout/auth failure discovered later
+	// would reach the client as HTTP 200 with an error body and the host could
+	// neither retry on another credential nor apply cooldown. Opening here keeps
+	// those failures on the envelope path, where the status is still ours to set.
 	ctx, cancel := context.WithCancel(context.Background())
 	chatURL := realmOf(sa).chatURL()
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatURL, strings.NewReader(encodedBody))
-	if err != nil {
+	stream, rest, openErr := openUpstreamStream(ctx, sa, encodedBody, chatURL, upstreamModel)
+	if openErr != nil {
 		cancel()
-		streamEmitError(req.StreamID, err.Error())
-		streamClose(req.StreamID)
-		return okEnvelope(streamResponse{Headers: headers})
+		publishUsage(req.Model, upstreamModel, authUID, started, usage.Detail{}, true, 0, openErr.Error())
+		return nil, openErr
 	}
-	if err := applyCosyHeaders(httpReq, sa, encodedBody, chatURL, upstreamModel, true); err != nil {
-		cancel()
-		streamEmitError(req.StreamID, "cosy: "+err.Error())
-		streamClose(req.StreamID)
-		return okEnvelope(streamResponse{Headers: headers})
-	}
-	go pumpUpstreamStream(func() (*http.Request, error) {
-		return newChatRequest(ctx, sa, encodedBody, chatURL, upstreamModel)
-	}, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, sa)
+	go pumpUpstreamStream(rest, stream, cancel, req.StreamID, sseFramed, req.Model, upstreamModel, authUID, started, req.AuthID, sa)
 	return okEnvelope(streamResponse{Headers: headers})
 }
 

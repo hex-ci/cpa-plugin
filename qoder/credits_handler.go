@@ -54,8 +54,8 @@ func handleImportPAT(req pluginapi.ManagementRequest) map[string]any {
 	var env envelope
 	if err := json.Unmarshal(rawResp, &env); err != nil || !env.OK {
 		msg := "host.auth.save failed"
-		if env.Error != nil && env.Error.Message != "" {
-			msg = env.Error.Message
+		if msgText := envelopeErrorMessage(env); msgText != "" {
+			msg = msgText
 		}
 		return map[string]any{"success": false, "error": msg}
 	}

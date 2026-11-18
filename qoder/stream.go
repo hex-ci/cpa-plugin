@@ -35,13 +35,51 @@ func streamEmit(streamID string, payload []byte) error {
 	return err
 }
 
+// streamEmitError reports a stream failure to the host's error channel.
+//
+// The error must go into the RPC's error fields, never into a payload chunk:
+// a chunk that merely *contains* an error object is delivered as a normal
+// event, so the client gets HTTP 200 with an error body and the host cannot
+// apply its retry/cooldown rules. error_detail additionally carries the status
+// and retry guidance that a bare message cannot express.
 func streamEmitError(streamID, message string) {
+	emitStreamFailure(streamID, message, nil)
+}
+
+// streamEmitFailure reports a classified failure (status, retry-after, scope).
+func streamEmitFailure(streamID string, detail *pluginError) {
+	if detail == nil {
+		return
+	}
+	emitStreamFailure(streamID, detail.Message, detail)
+}
+
+func emitStreamFailure(streamID, message string, detail *pluginError) {
 	if streamID == "" {
 		return
 	}
+	raw, err := streamFailureBody(streamID, message, detail)
+	if err != nil {
+		return
+	}
+	_, _ = hostCall(pluginabi.MethodHostStreamEmit, raw)
+}
+
+// streamFailureBody renders the host.stream.emit request for a failure. Split
+// out so the wire shape is testable: a payload chunk here would be delivered to
+// the client as a normal event.
+func streamFailureBody(streamID, message string, detail *pluginError) ([]byte, error) {
 	// A-37: never emit raw upstream bodies that may contain Bearer/JWT.
-	errJSON, _ := json.Marshal(map[string]any{"error": map[string]any{"message": redactSecrets(message)}})
-	_ = streamEmit(streamID, errJSON)
+	body := map[string]any{
+		"stream_id": streamID,
+		"error":     redactSecrets(message),
+	}
+	if detail != nil {
+		safe := *detail
+		safe.Message = redactSecrets(detail.Message)
+		body["error_detail"] = safe
+	}
+	return json.Marshal(body)
 }
 
 var streamCloseOnce sync.Map // streamID -> sync.Once
@@ -91,7 +129,10 @@ func rawDumpReader(r io.Reader) io.Reader {
 	return io.TeeReader(r, f)
 }
 
-func pumpUpstreamStream(buildReq func() (*http.Request, error), cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, sa *storedAuth) {
+// pumpUpstreamStream relays a stream that has already been opened and
+// classified, emitting each cleaned chunk to the host stream. Opening happens
+// in openUpstreamStream so failures can still set the response status.
+func pumpUpstreamStream(upstream io.Reader, stream *hostHTTPStream, cancel context.CancelFunc, streamID string, sseFramed bool, requestedModel, upstreamModel, authUID string, started time.Time, authID string, sa *storedAuth) {
 	// Always close the host stream exactly once on every exit path.
 	closed := false
 	closeOnce := func() {
@@ -105,55 +146,19 @@ func pumpUpstreamStream(buildReq func() (*http.Request, error), cancel context.C
 	if cancel != nil {
 		defer cancel()
 	}
-
-	// Capacity queue: a 10605 answer means the model is busy, not that the
-	// request failed. Wait (bounded by config) and retry before surfacing it.
-	var stream *hostHTTPStream
-	var statusCode int
-	queueCfg := currentConfig()
-	for attempt := 0; ; attempt++ {
-		httpReq, reqErr := buildReq()
-		if reqErr != nil {
-			streamEmitError(streamID, fmt.Sprintf("cosy: %v", reqErr))
-			return
-		}
-		var err error
-		stream, statusCode, _, err = hostHTTPDoStream(httpReq)
-		if err != nil {
-			publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, 0, err.Error())
-			streamEmitError(streamID, fmt.Sprintf("http_error: %v", err))
-			return
-		}
-		if statusCode < 400 {
-			break
-		}
-		errPayload, _ := io.ReadAll(newHostStreamReader(stream))
-		stream.Close()
-		signal, isQueue := detectQueueSignal(statusCode, errPayload)
-		if !isQueue || !queueCfg.QueueWait || attempt >= maxQueueRetries {
-			publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, string(errPayload))
-			if authUID != "" {
-				go reconcileByUID(authUID, statusCode, string(errPayload))
-			}
-			if isQueue {
-				streamEmitError(streamID, queuedError(signal.Detail, time.Duration(signal.RetryAfter)*time.Second).Error())
-				return
-			}
-			streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(errPayload), 200)))
-			return
-		}
-		hostLogf("info", fmt.Sprintf("model queue: %s busy, waiting %ds (attempt %d)", upstreamModel, signal.RetryAfter, attempt+1))
-		if waitErr := awaitQueueTurn(context.Background(), sa, newRequestSetID(), upstreamModel,
-			time.Duration(queueCfg.QueueMaxWait)*time.Second,
-			time.Duration(signal.RetryAfter)*time.Second, nil); waitErr != nil {
-			publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, statusCode, waitErr.Error())
-			streamEmitError(streamID, queuedError(signal.Detail, time.Duration(queueCfg.QueueMaxWait)*time.Second).Error())
-			return
-		}
+	if stream != nil {
+		defer stream.Close()
 	}
-	defer stream.Close()
+	if upstream == nil {
+		streamEmitFailure(streamID, &pluginError{
+			Code:       "internal_error",
+			Message:    "upstream stream unavailable",
+			HTTPStatus: http.StatusInternalServerError,
+		})
+		return
+	}
 	collector := &sseUsageCollector{}
-	scanner := bufio.NewScanner(rawDumpReader(newHostStreamReader(stream)))
+	scanner := bufio.NewScanner(rawDumpReader(upstream))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -174,7 +179,7 @@ func pumpUpstreamStream(buildReq func() (*http.Request, error), cancel context.C
 		}
 		if code, msg := sseErrorEnvelope(outer, bodyStr); code != 0 {
 			publishUsage(requestedModel, upstreamModel, authUID, started, usage.Detail{}, true, code, msg)
-			streamEmitError(streamID, fmt.Sprintf("upstream %d: %s", code, truncateRedacted(msg, 200)))
+			streamEmitFailure(streamID, upstreamFailureDetail(code, fmt.Sprintf("upstream %d: %s", code, truncateRedacted(msg, 200))))
 			return
 		}
 		collector.feed(bodyStr)
@@ -210,6 +215,7 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 	chatURL := realmOf(sa).chatURL()
 	var stream *hostHTTPStream
 	var statusCode int
+	var upstream io.Reader
 	var err error
 	queueCfg := currentConfig()
 	for attempt := 0; ; attempt++ {
@@ -222,27 +228,43 @@ func collectUpstreamStreamQoder(encodedBody string, sa *storedAuth, modelKey str
 			return nil, 0, fmt.Errorf("http_error: %w", err)
 		}
 		if statusCode < 400 {
-			break
+			sig, queued, rest, peekErr := peekQueueSignal(newHostStreamReader(stream))
+			if !queued {
+				if peekErr != nil && rest == nil {
+					stream.Close()
+					return nil, 0, fmt.Errorf("upstream stream read error: %w", peekErr)
+				}
+				upstream = rest
+				break
+			}
+			stream.Close()
+			if waitErr := queueWaitGate(sa, modelKey, sig, attempt); waitErr != nil {
+				return nil, statusCode, waitErr
+			}
+			continue
 		}
 		payload, _ := io.ReadAll(newHostStreamReader(stream))
 		stream.Close()
 		signal, isQueue := detectQueueSignal(statusCode, payload)
 		if !isQueue || !queueCfg.QueueWait || attempt >= maxQueueRetries {
 			if isQueue {
-				return nil, statusCode, queuedError(signal.Detail, time.Duration(signal.RetryAfter)*time.Second)
+				return nil, statusCode, newPluginFailure(queueBusyDetail(signal, time.Duration(signal.RetryAfter)*time.Second))
 			}
-			return nil, statusCode, fmt.Errorf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))
+			return nil, statusCode, newPluginFailure(upstreamFailureDetail(statusCode, fmt.Sprintf("upstream %d: %s", statusCode, truncateRedacted(string(payload), 200))))
 		}
 		hostLogf("info", fmt.Sprintf("model queue: %s busy, waiting %ds (attempt %d)", modelKey, signal.RetryAfter, attempt+1))
 		if waitErr := awaitQueueTurn(context.Background(), sa, newRequestSetID(), modelKey,
 			time.Duration(queueCfg.QueueMaxWait)*time.Second,
 			time.Duration(signal.RetryAfter)*time.Second, nil); waitErr != nil {
-			return nil, statusCode, queuedError(signal.Detail, time.Duration(queueCfg.QueueMaxWait)*time.Second)
+			return nil, statusCode, newPluginFailure(queueBusyDetail(signal, time.Duration(queueCfg.QueueMaxWait)*time.Second))
 		}
 	}
 	defer stream.Close()
 	chunks := make([]pluginapi.ExecutorStreamChunk, 0, 64)
-	scanner := bufio.NewScanner(rawDumpReader(newHostStreamReader(stream)))
+	if upstream == nil {
+		upstream = newHostStreamReader(stream)
+	}
+	scanner := bufio.NewScanner(rawDumpReader(upstream))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()

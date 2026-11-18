@@ -9,10 +9,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -159,6 +162,69 @@ func fetchQueueStatus(sa *storedAuth, requestSetID, modelKey string) (*queueStat
 		return nil, fmt.Errorf("queue status parse: %w", err)
 	}
 	return &st, nil
+}
+
+// peekQueueSignal inspects the first SSE frame of an upstream stream and
+// decides whether it is a capacity-queue answer.
+//
+// Upstream can deliver 10605 inside an HTTP 200 SSE envelope, so a status-only
+// check never sees it: the retry loop breaks out, the frame reaches the normal
+// parser and the client gets an error instead of a wait.
+//
+// rest replays the stream from its first byte (peeked bytes are buffered ahead
+// by bufio, so returning only the visible head would silently drop the rest and
+// truncate the response — the missing tail is what makes a stream end without
+// finish_reason). Callers must read from rest, not from the original stream.
+func peekQueueSignal(r io.Reader) (sig queueSignal, queued bool, rest io.Reader, err error) {
+	br := bufio.NewReaderSize(r, 64*1024)
+	var head bytes.Buffer
+	sawData := false
+	// finish wraps every return so the caller always gets a replayable stream.
+	finish := func(s queueSignal, q bool, e error) (queueSignal, bool, io.Reader, error) {
+		return s, q, io.MultiReader(bytes.NewReader(head.Bytes()), br), e
+	}
+	for {
+		line, readErr := br.ReadBytes('\n')
+		head.Write(line)
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 && bytes.HasPrefix(trimmed, []byte("data:")) {
+			sawData = true
+		}
+		// A frame ends at its blank separator line; evaluate the complete frame.
+		if sawData && len(trimmed) == 0 {
+			if sig, ok := detectQueueSignal(0, head.Bytes()); ok {
+				return finish(sig, true, nil)
+			}
+			return finish(queueSignal{}, false, nil)
+		}
+		if readErr != nil {
+			if sawData {
+				if sig, ok := detectQueueSignal(0, head.Bytes()); ok {
+					return finish(sig, true, nil)
+				}
+			}
+			return finish(queueSignal{}, false, readErr)
+		}
+		if head.Len() > 1<<20 {
+			return finish(queueSignal{}, false, nil)
+		}
+	}
+}
+
+// queueWaitGate blocks until the model queue lets the request through. nil
+// means "retry now"; an error is what the caller must surface to the client.
+func queueWaitGate(sa *storedAuth, modelKey string, signal queueSignal, attempt int) error {
+	cfg := currentConfig()
+	if !cfg.QueueWait || attempt >= maxQueueRetries {
+		return queuedError(signal.Detail, time.Duration(signal.RetryAfter)*time.Second)
+	}
+	hostLogf("info", fmt.Sprintf("model queue: %s busy, waiting %ds (attempt %d)", modelKey, signal.RetryAfter, attempt+1))
+	if err := awaitQueueTurn(context.Background(), sa, newRequestSetID(), modelKey,
+		time.Duration(cfg.QueueMaxWait)*time.Second,
+		time.Duration(signal.RetryAfter)*time.Second, nil); err != nil {
+		return queuedError(signal.Detail, time.Duration(cfg.QueueMaxWait)*time.Second)
+	}
+	return nil
 }
 
 // awaitQueueTurn blocks until the model queue says the request may proceed.

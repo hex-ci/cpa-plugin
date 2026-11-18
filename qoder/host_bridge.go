@@ -88,8 +88,8 @@ func hostBridgeUnwrap(raw []byte, method string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("%s: decode envelope: %w", method, err)
 	}
 	if !env.OK {
-		if env.Error != nil {
-			return nil, fmt.Errorf("%s: host error %s: %s", method, env.Error.Code, env.Error.Message)
+		if code, text, ok := envelopeErrorDetail(env); ok {
+			return nil, fmt.Errorf("%s: host error %s: %s", method, code, text)
 		}
 		return nil, fmt.Errorf("%s: host returned not-ok", method)
 	}
