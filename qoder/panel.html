@@ -839,12 +839,17 @@ async function selectAuth(idx, btn){
       busy(btn,false);
       return;
     }
-    activeAuthId=d.active_auth||idx;
+    // The card list is keyed by auth_index while active_auth is the credential
+    // id (file name); prefer the echoed auth_index so the local re-render below
+    // actually marks the clicked card and the UI reacts immediately instead of
+    // waiting for the next full reload.
+    const selectedKey=d.auth_index||idx;
+    activeAuthId=selectedKey;
     const who=d.nickname||idx;
     const region="CN";
     toast("已选用","ok",who+" · "+region);
     // Re-render from local state for instant feedback, then soft reload
-    (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_index===activeAuthId);});
+    (lastAccounts||[]).forEach(a=>{a.selected=(a.auth_index===selectedKey);});
     const g=document.getElementById("grid");
     if(g){
       g.innerHTML=accountsForFilter(lastAccounts).map(card).join("");

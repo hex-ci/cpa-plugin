@@ -117,8 +117,14 @@ func handleSelectAuth(req pluginapi.ManagementRequest) map[string]any {
 		}
 		setActiveAuthID(f.ID)
 		return map[string]any{
-			"ok":          true,
+			"ok": true,
+			// active_auth is the credential id (file name); the card list is
+			// keyed by auth_index, so both are returned and the panel compares
+			// against auth_index. Returning only the id made the in-place
+			// re-render mark nothing as selected, and the card only flipped
+			// after a full reload re-read the list.
 			"active_auth": f.ID,
+			"auth_index":  f.AuthIndex,
 			"region":      "cn",
 			"nickname":    sa.Account.Nickname,
 			"uid":         sa.Account.UID,
