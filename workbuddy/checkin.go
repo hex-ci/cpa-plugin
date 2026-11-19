@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,14 @@ import (
 var (
 	schedulerStop chan struct{}
 	schedulerMu   sync.Mutex
+
+	// lastAutoCheckinDay is the calendar day (local) of the last scheduled run.
+	// Without it a restart after the reset hour skips the whole day: the timer
+	// only ever points at the next slot, so 09:00 today is already "past" and
+	// the loop waits until tomorrow. Manual check-in keeps working, which is
+	// what makes the failure look account-specific.
+	lastAutoCheckinDay string
+	lastCheckinMu      sync.Mutex
 )
 
 func ensureScheduler() {
@@ -25,7 +34,61 @@ func ensureScheduler() {
 		return // already running
 	}
 	schedulerStop = make(chan struct{})
+	// Announce the armed schedule: without this line "no check-in log today"
+	// cannot be told apart from "the scheduler never started".
+	hostLogf("info", fmt.Sprintf("checkin scheduler armed, checkin=%v activity=%v travel=%v growth_tasks=%v keepalive=%v next tick %s",
+		checkinHours, activityHours, travelHours, growthTasksHours, keepaliveHours,
+		nextCheckinTime(time.Now()).Format("2006-01-02 15:04")))
 	go schedulerLoop(schedulerStop)
+	go catchUpCheckin()
+}
+
+// catchUpCheckin runs today's check-in when the process started after the reset
+// hour (restart, deploy, crash recovery). Check-in is idempotent upstream, so an
+// extra run costs one request and reports "already".
+func catchUpCheckin() {
+	// Let configure finish publishing config and the host finish loading auths.
+	time.Sleep(10 * time.Second)
+	checkinAutoMu.RLock()
+	doCheckin := checkinAuto
+	checkinAutoMu.RUnlock()
+	if !doCheckin {
+		return
+	}
+	now := time.Now()
+	if !afterFirstCheckinHour(now) {
+		return
+	}
+	lastCheckinMu.Lock()
+	done := lastAutoCheckinDay == now.Format("2006-01-02")
+	lastCheckinMu.Unlock()
+	if done {
+		return
+	}
+	hostLogf("info", "checkin catch-up: today's window was missed, running now")
+	runAutoCheckin()
+}
+
+// afterFirstCheckinHour reports whether the earliest daily slot has passed.
+func afterFirstCheckinHour(now time.Time) bool {
+	if len(checkinHours) == 0 {
+		return false
+	}
+	first := checkinHours[0]
+	for _, h := range checkinHours[1:] {
+		if h < first {
+			first = h
+		}
+	}
+	return now.Hour() >= first
+}
+
+// markAutoCheckinDone records that today's scheduled run completed, so the
+// catch-up path does not repeat it on the next reconfigure.
+func markAutoCheckinDone(now time.Time) {
+	lastCheckinMu.Lock()
+	lastAutoCheckinDay = now.Format("2006-01-02")
+	lastCheckinMu.Unlock()
 }
 
 // Note: there is deliberately no stopCheckinScheduler. The plugin shutdown
@@ -115,12 +178,17 @@ func runAutoCheckin() {
 	checkinAutoMu.RUnlock()
 	// Lifecycle may still run when check-in is off (credit gate).
 	if !doCheckin && !lifecycleEnabled() {
+		hostLogf("info", "checkin tick: skipped (checkin and lifecycle both disabled)")
 		return
 	}
 	files, err := hostAuthList()
 	if err != nil {
+		hostLogf("warn", fmt.Sprintf("checkin tick: cannot list accounts: %v", err))
 		return
 	}
+	// One line per tick so "did the scheduler fire" is answerable from logs
+	// alone; the per-account lines below say what it decided for each one.
+	hostLogf("info", fmt.Sprintf("checkin tick: %d account(s), checkin=%t lifecycle=%t", len(files), doCheckin, lifecycleEnabled()))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 4)
 	for _, f := range files {
@@ -134,20 +202,33 @@ func runAutoCheckin() {
 		}()
 	}
 	wg.Wait()
+	// Record the day only when a check-in actually ran, so the break-glass
+	// catch-up path can tell "already handled" from "never happened".
+	if doCheckin {
+		markAutoCheckinDone(time.Now())
+	}
 }
 
 // processAutoCheckinAccount handles one account's scheduled tick. Extracted so
 // runAutoCheckin can fan out per-account work without duplicating logic.
+//
+// Every branch logs its outcome: a silent skip is indistinguishable from "the
+// scheduler never ran for this account", which is exactly the report this path
+// has to answer. Logs carry the short UID and nickname so a line can be tied
+// back to an account without exposing the full credential.
 func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	// A-24: only fetch sa when needed (checkin). For lifecycle-only paths,
 	// let reconcileOneAccount do the single hostAuthGetBundle internally.
 	if doCheckin {
 		sa, err := hostAuthGet(f.AuthIndex)
 		if err != nil {
+			hostLogf("warn", fmt.Sprintf("checkin %s: cannot load credential: %v", f.Label, err))
 			return
 		}
+		who := checkinAccountLabel(f, sa)
 		if isGlobalDomain(sa.Auth.Domain) {
 			// Global: never check-in. Lifecycle only.
+			hostLogf("info", fmt.Sprintf("checkin %s: skipped (global account, no check-in)", who))
 			// Invalidate cache (copy entry, set credits=nil, keep plan/checkin).
 			if v, ok := accountCache.Load(f.ID); ok {
 				if e, ok2 := v.(*accountCacheEntry); ok2 {
@@ -165,6 +246,7 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 		// Enterprise: no check-in (quota is admin-managed per cycle); still
 		// reconcile so the note refreshes.
 		if isEnterpriseAccount(sa) {
+			hostLogf("info", fmt.Sprintf("checkin %s: skipped (enterprise account)", who))
 			if lifecycleEnabled() {
 				_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 			}
@@ -173,26 +255,43 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 		withCheckinLock(f.AuthIndex, func() {
 			// CN: daily check-in when enabled.
 			ci, err := fetchCheckinStatus(sa)
-			if err == nil && ci != nil && ci.Active && !ci.TodayCheckedIn {
-				if _, callErr := performCheckinCall(sa); callErr == nil {
-					// Refresh once after a successful checkin call so cache reflects
-					// the post-call state. If the status call fails keep the pre-call
-					// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
-					// with a second fetch that could race with concurrent readers).
-					if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
-						ci = ci2
-					}
-					// P1-5: checkin grants new credits — refresh the credits cache
-					// immediately so the panel shows the updated balance without
-					// waiting for the async reconcile pass.
-					if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
-						if v, ok := accountCache.Load(f.ID); ok {
-							if prev, ok2 := v.(*accountCacheEntry); ok2 {
-								fresh := *prev
-								fresh.credits = cr2
-								fresh.fetched = time.Now()
-								accountCache.Store(f.ID, &fresh)
-							}
+			switch {
+			case err != nil:
+				// Usually the session is dead or the activity endpoint moved.
+				hostLogf("warn", fmt.Sprintf("checkin %s: status unavailable: %v", who, err))
+			case ci == nil:
+				hostLogf("warn", fmt.Sprintf("checkin %s: status empty", who))
+			case !ci.Active:
+				// Activity not running for this account (no streak programme).
+				hostLogf("info", fmt.Sprintf("checkin %s: skipped (activity inactive for this account)", who))
+			case ci.TodayCheckedIn:
+				hostLogf("info", fmt.Sprintf("checkin %s: already checked in today (streak %d)", who, ci.StreakDays))
+			default:
+				res, callErr := performCheckinCall(sa)
+				if callErr != nil {
+					hostLogf("warn", fmt.Sprintf("checkin %s: check-in failed: %v", who, callErr))
+					break
+				}
+				msg, _ := res["message"].(string)
+				hostLogf("info", fmt.Sprintf("checkin %s: checked in (streak %d, daily %d) %s",
+					who, ci.StreakDays+1, ci.DailyCredit, msg))
+				// Refresh once after a successful checkin call so cache reflects
+				// the post-call state. If the status call fails keep the pre-call
+				// snapshot rather than dropping it (v0.6.31: avoid shadowing ci
+				// with a second fetch that could race with concurrent readers).
+				if ci2, _ := fetchCheckinStatus(sa); ci2 != nil {
+					ci = ci2
+				}
+				// P1-5: checkin grants new credits — refresh the credits cache
+				// immediately so the panel shows the updated balance without
+				// waiting for the async reconcile pass.
+				if cr2, crErr := fetchUserResource(sa); crErr == nil && cr2 != nil {
+					if v, ok := accountCache.Load(f.ID); ok {
+						if prev, ok2 := v.(*accountCacheEntry); ok2 {
+							fresh := *prev
+							fresh.credits = cr2
+							fresh.fetched = time.Now()
+							accountCache.Store(f.ID, &fresh)
 						}
 					}
 				}
@@ -220,6 +319,35 @@ func processAutoCheckinAccount(f pluginapi.HostAuthFileEntry, doCheckin bool) {
 	if lifecycleEnabled() {
 		_, _ = reconcileOneAccount(f.AuthIndex, f.ID, true)
 	}
+}
+
+// checkinAccountLabel renders a log-safe account identifier: nickname plus the
+// short UID, so two accounts sharing a nickname stay distinguishable.
+func checkinAccountLabel(f pluginapi.HostAuthFileEntry, sa *storedAuth) string {
+	name := ""
+	if sa != nil {
+		name = strings.TrimSpace(displayNameFor(sa))
+	}
+	if name == "" {
+		name = strings.TrimSpace(f.Label)
+	}
+	if name == "" {
+		name = strings.TrimSpace(f.Name)
+	}
+	uid := ""
+	if sa != nil {
+		uid = strings.TrimSpace(sa.Account.UID)
+	}
+	if uid == "" {
+		uid = strings.TrimSpace(f.ID)
+	}
+	if uid == "" {
+		return name
+	}
+	if name == "" {
+		return shortUID(uid)
+	}
+	return fmt.Sprintf("%s/%s", name, shortUID(uid))
 }
 
 // handleManualCheckinWithCallback serves POST /checkin.
