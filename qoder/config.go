@@ -10,6 +10,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -35,11 +36,18 @@ type pluginConfig struct {
 	OAuthClientMode string // cn | global
 	Scheduler       string // off | credits
 
-	CheckinAuto     bool
-	TokenKeepalive  bool
-	LifecycleAuto   bool
-	QueueWait       bool
-	QueueMaxWait    int // seconds
+	CheckinAuto    bool
+	TokenKeepalive bool
+	LifecycleAuto  bool
+	QueueWait      bool
+	QueueMaxWait   int // seconds
+	// ContextWindow selects the window advertised to clients (ContextLength).
+	// "default" keeps upstream's is_default option (200K for most models),
+	// "max" takes each model's largest option, a number is used as-is. The
+	// catalog offers 200K/400K/1M per model; the plugin previously always sent
+	// is_default, which left clients with the smallest choice and no way to
+	// pick a larger one.
+	ContextWindow   string // default | max | <tokens>
 	CosyMachineOS   string
 	ModelListBody   string // kwm | empty
 	UsageReportURL  string
@@ -75,12 +83,18 @@ func defaultPluginConfig() pluginConfig {
 		QueueWait:      true,
 		QueueMaxWait:   600,
 		ModelListBody:  modelListBodyKWM,
+		ContextWindow:  contextWindowDefault,
 	}
 }
 
 const (
 	modelListBodyKWM   = "kwm"
 	modelListBodyEmpty = "empty"
+
+	// contextWindowDefault keeps the catalog's is_default option; contextWindowMax
+	// takes each model's largest option.
+	contextWindowDefault = "default"
+	contextWindowMax     = "max"
 )
 
 // pluginConfigSnapshot holds the live configuration. Readers take the pointer
@@ -226,6 +240,8 @@ func (c *pluginConfig) apply(key string, val *yaml.Node) error {
 		return decodeBool(val, &c.QueueWait)
 	case "queue_max_wait":
 		return decodeInt(val, &c.QueueMaxWait)
+	case "context_window":
+		return decodeString(val, &c.ContextWindow)
 	case "models":
 		return c.decodeStaticModels(val)
 	default:
@@ -354,6 +370,19 @@ func (c *pluginConfig) validate() error {
 	}
 	if c.QueueMaxWait <= 0 || c.QueueMaxWait > 3600 {
 		return fmt.Errorf("config_yaml: queue_max_wait must be within 1..3600 seconds")
+	}
+	switch mode := strings.ToLower(strings.TrimSpace(c.ContextWindow)); {
+	case mode == "":
+		c.ContextWindow = contextWindowDefault
+	case mode == contextWindowDefault, mode == contextWindowMax:
+		c.ContextWindow = mode
+	default:
+		tokens, err := strconv.ParseInt(mode, 10, 64)
+		if err != nil || tokens <= 0 {
+			return fmt.Errorf("config_yaml: context_window must be %q, %q or a positive token count, got %q",
+				contextWindowDefault, contextWindowMax, c.ContextWindow)
+		}
+		c.ContextWindow = strconv.FormatInt(tokens, 10)
 	}
 	if os := strings.TrimSpace(c.CosyMachineOS); os != "" {
 		if !strings.Contains(os, "_") || strings.ContainsAny(os, " \t") {

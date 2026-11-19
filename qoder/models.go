@@ -107,13 +107,34 @@ func (e catalogEntry) thinkingToggleable() bool {
 // contextWindow returns the default context window, falling back to the input
 // token limit.
 func (e catalogEntry) contextWindow() int64 {
-	var def, largest int64
-	for _, cfg := range e.ContextConfig {
-		if cfg.TokenCount > largest {
-			largest = cfg.TokenCount
+	return e.contextWindowFor(contextWindowDefault)
+}
+
+// contextWindowFor resolves the window for one mode: "default" follows the
+// catalog's is_default option, "max" takes the largest option, and a numeric
+// string is used as-is (clamped to the model's largest option, because a larger
+// window than the catalog offers would only produce upstream rejections).
+//
+// The catalog usually offers 200K/400K/1M with 200K marked default. Always
+// sending the default left clients with the smallest possible window, which is
+// why they had no way to pick a bigger one.
+func (e catalogEntry) contextWindowFor(mode string) int64 {
+	def, largest := e.contextWindowOptions()
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case contextWindowMax:
+		if largest > 0 {
+			return largest
 		}
-		if cfg.IsDefault && cfg.TokenCount > 0 {
-			def = cfg.TokenCount
+	case contextWindowDefault, "":
+		if def > 0 {
+			return def
+		}
+	default:
+		if want, err := strconv.ParseInt(strings.TrimSpace(mode), 10, 64); err == nil && want > 0 {
+			if largest > 0 && want > largest {
+				return largest
+			}
+			return want
 		}
 	}
 	if def > 0 {
@@ -126,6 +147,19 @@ func (e catalogEntry) contextWindow() int64 {
 		return largest
 	}
 	return 180000
+}
+
+// contextWindowOptions returns the catalog's default and largest window sizes.
+func (e catalogEntry) contextWindowOptions() (def, largest int64) {
+	for _, cfg := range e.ContextConfig {
+		if cfg.TokenCount > largest {
+			largest = cfg.TokenCount
+		}
+		if cfg.IsDefault && cfg.TokenCount > 0 {
+			def = cfg.TokenCount
+		}
+	}
+	return def, largest
 }
 
 // modelDisplayName appends the upstream charge rate to the model name, the same
@@ -148,15 +182,22 @@ func modelDisplayName(name string, factor float64, free bool) string {
 }
 
 // modelInfo renders one catalog entry for the host.
+//
+// ContextLength is the window a client budgets against, so it follows the
+// context_window setting. InputTokenLimit stays the catalog's max_input_tokens:
+// that is the hard per-request input cap, and inflating it to the window size
+// would make clients believe a 1M request is safe when upstream may not accept
+// it.
 func (e catalogEntry) modelInfo() pluginapi.ModelInfo {
+	window := e.contextWindowFor(currentConfig().ContextWindow)
 	info := pluginapi.ModelInfo{
 		ID:                         e.Key,
 		Object:                     "model",
 		OwnedBy:                    providerName,
 		Name:                       firstNonEmpty(e.DisplayName, e.Key),
 		DisplayName:                modelDisplayName(firstNonEmpty(e.DisplayName, e.Key), e.PriceFactor, e.IsFree),
-		ContextLength:              e.contextWindow(),
-		InputTokenLimit:            firstNonZero64(e.MaxInputTokens, e.contextWindow()),
+		ContextLength:              window,
+		InputTokenLimit:            firstNonZero64(e.MaxInputTokens, window),
 		MaxCompletionTokens:        defaultMaxOutputTokens,
 		OutputTokenLimit:           defaultMaxOutputTokens,
 		SupportedGenerationMethods: []string{"chat"},

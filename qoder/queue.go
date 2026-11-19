@@ -213,16 +213,20 @@ func peekQueueSignal(r io.Reader) (sig queueSignal, queued bool, rest io.Reader,
 
 // queueWaitGate blocks until the model queue lets the request through. nil
 // means "retry now"; an error is what the caller must surface to the client.
+//
+// The error is a pluginFailure, not a bare Go error: callers return it straight
+// to the host, and a bare error loses the 429/Retry-After classification, which
+// makes the host fall back to 500 and skip credential failover.
 func queueWaitGate(sa *storedAuth, modelKey string, signal queueSignal, attempt int) error {
 	cfg := currentConfig()
 	if !cfg.QueueWait || attempt >= maxQueueRetries {
-		return queuedError(signal.Detail, time.Duration(signal.RetryAfter)*time.Second)
+		return newPluginFailure(queueBusyDetail(signal, time.Duration(signal.RetryAfter)*time.Second))
 	}
 	hostLogf("info", fmt.Sprintf("model queue: %s busy, waiting %ds (attempt %d)", modelKey, signal.RetryAfter, attempt+1))
 	if err := awaitQueueTurn(context.Background(), sa, newRequestSetID(), modelKey,
 		time.Duration(cfg.QueueMaxWait)*time.Second,
 		time.Duration(signal.RetryAfter)*time.Second, nil); err != nil {
-		return queuedError(signal.Detail, time.Duration(cfg.QueueMaxWait)*time.Second)
+		return newPluginFailure(queueBusyDetail(signal, time.Duration(cfg.QueueMaxWait)*time.Second))
 	}
 	return nil
 }
