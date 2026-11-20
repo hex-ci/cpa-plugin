@@ -140,3 +140,96 @@ func TestIsTransientBillingErr(t *testing.T) {
 		}
 	}
 }
+
+// TestPerformCheckinCall_RetriesOnEmptyBody verifies that a transient empty
+// response from daily-checkin is retried (upstream hiccup, not an account
+// problem): the scheduled call must recover on its own, otherwise the account
+// stays unchecked until someone clicks manually.
+func TestPerformCheckinCall_RetriesOnEmptyBody(t *testing.T) {
+	orig := billingRetryDelays
+	billingRetryDelays = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond}
+	defer func() { billingRetryDelays = orig }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			// HTTP 200 with an empty body: json.Unmarshal fails, retryable.
+			w.Header().Set("Content-Type", "application/json")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"OK","data":{"streak_days":50,"credit":100}}`))
+	}))
+	defer srv.Close()
+
+	restore := setBillingBase(srv.URL)
+	defer restore()
+
+	res, err := performCheckinCall(&storedAuth{})
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if res["success"] != true {
+		t.Fatalf("success = %v, want true", res["success"])
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls (1 retry), got %d", calls)
+	}
+}
+
+// TestPerformCheckinCall_ExhaustedRetries verifies that a permanently broken
+// response fails after the retry budget instead of looping forever.
+func TestPerformCheckinCall_ExhaustedRetries(t *testing.T) {
+	orig := billingRetryDelays
+	billingRetryDelays = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond}
+	defer func() { billingRetryDelays = orig }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+	}))
+	defer srv.Close()
+
+	restore := setBillingBase(srv.URL)
+	defer restore()
+
+	_, err := performCheckinCall(&storedAuth{})
+	if err == nil {
+		t.Fatal("expected error when every attempt returns an empty body")
+	}
+	if calls != 3 { // 1 initial + 2 retries
+		t.Fatalf("expected 3 calls, got %d", calls)
+	}
+}
+
+// TestPerformCheckinCall_BusinessErrorNotRetried verifies that a business
+// rejection ("already checked in") surfaces immediately without a retry:
+// retrying an idempotent success is fine, but the panel must see the message.
+func TestPerformCheckinCall_BusinessErrorNotRetried(t *testing.T) {
+	orig := billingRetryDelays
+	billingRetryDelays = []time.Duration{1 * time.Millisecond, 1 * time.Millisecond}
+	defer func() { billingRetryDelays = orig }()
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":400,"msg":"already checked in today"}`))
+	}))
+	defer srv.Close()
+
+	restore := setBillingBase(srv.URL)
+	defer restore()
+
+	res, err := performCheckinCall(&storedAuth{})
+	if err != nil {
+		t.Fatalf("business error must surface as a result, got error: %v", err)
+	}
+	if res["success"] != false {
+		t.Fatalf("success = %v, want false", res["success"])
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 call (no retry), got %d", calls)
+	}
+}

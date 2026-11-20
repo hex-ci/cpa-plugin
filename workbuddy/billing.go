@@ -572,21 +572,51 @@ func performCheckinCall(sa *storedAuth) (map[string]any, error) {
 }
 
 func performCheckinCallWithCallback(sa *storedAuth, callbackID string) (map[string]any, error) {
-	data, err := billingCallWithCallback(sa, "/v2/billing/meter/daily-checkin", nil, callbackID)
-	if err != nil {
-		// billingCall returns business errors (code != 0) as Go errors; surface
-		// them as a structured result so the panel can show "already checked in".
-		return map[string]any{"success": false, "message": err.Error()}, nil
+	// Empty/truncated upstream bodies are transient hiccups, not account
+	// problems: retry before failing. Check-in is idempotent upstream, so a
+	// repeat costs nothing and an already-checked-in answer surfaces as a
+	// business message. Without this the scheduled call leaves the account
+	// unchecked until someone notices and clicks manually.
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		data, err := billingCallWithCallback(sa, "/v2/billing/meter/daily-checkin", nil, callbackID)
+		if err != nil && !isCheckinBodyTransient(err) {
+			// Business errors (code != 0, e.g. "already checked in") surface as
+			// a structured result so the panel can show the message.
+			return map[string]any{"success": false, "message": err.Error()}, nil
+		}
+		if err == nil {
+			var m map[string]any
+			if uerr := json.Unmarshal(data, &m); uerr == nil {
+				// Explicitly set success as bool — upstream may return "true"
+				// (string) which would make `out["success"] == true` fail
+				// silently (P1-2 logic bug: type mismatch on success field).
+				m["success"] = true
+				return m, nil
+			} else {
+				// code=0 with a null/missing data field: same transient class.
+				err = uerr
+			}
+		}
+		lastErr = err
+		if attempt >= len(billingRetryDelays) {
+			break
+		}
+		time.Sleep(billingRetryDelays[attempt])
 	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
+	return nil, lastErr
+}
+
+// isCheckinBodyTransient reports parse failures caused by an empty or
+// truncated upstream body (billingCall wraps them as "parse failed: …",
+// a null data field fails json.Unmarshal directly). Business rejections
+// ("code=… msg=…") are not transient and must not be retried.
+func isCheckinBodyTransient(err error) bool {
+	if err == nil {
+		return false
 	}
-	// Explicitly set success as bool — upstream may return "true" (string)
-	// which would cause downstream `out["success"] == true` to fail silently
-	// (P1-2 logic bug: type mismatch on success field).
-	m["success"] = true
-	return m, nil
+	msg := err.Error()
+	return strings.Contains(msg, "parse failed") || strings.Contains(msg, "unexpected end of JSON input")
 }
 
 // isCreditsExhausted is the shared "耗尽" definition for panel + scheduler.
